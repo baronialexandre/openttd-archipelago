@@ -5,8 +5,8 @@ from BaseClasses import CollectionState
 if TYPE_CHECKING:
     from .world import OpenTTDWorld
 
-# Root cargos (no dependencies, can be starting cargo)
-ROOT_CARGOS = {"Passengers", "Mail", "Coal", "Oil", "Livestock", "Grain", "Wood", "Iron Ore", "Valuables"}
+# All cargo types in Temperate landscape
+CARGO_TYPES = {"Passengers", "Mail", "Coal", "Oil", "Livestock", "Grain", "Wood", "Iron Ore", "Steel", "Goods", "Valuables"}
 
 # Cargo dependencies in Temperate landscape based on industry chain:
 CARGO_DEPENDENCIES = {
@@ -23,6 +23,13 @@ CARGO_DEPENDENCIES = {
     "Goods": {"Wood", "Grain", "Livestock", "Steel", "Oil"},
 }
 
+VEHICULE_CARGO_COMPATIBILITY = {
+    "train": CARGO_TYPES,
+    "road_vehicle": CARGO_TYPES,
+    "ship": CARGO_TYPES,
+    "aircraft": {"Passengers", "Mail", "Goods", "Valuables"}
+}
+
 
 def has_vehicle_type(state: CollectionState, player: int, vehicle_type: str) -> bool:
     """Check if player has unlocked a specific vehicle type tier.
@@ -30,13 +37,13 @@ def has_vehicle_type(state: CollectionState, player: int, vehicle_type: str) -> 
     Args:
         state: The current game state
         player: The player ID
-        vehicle_type: One of "trains", "road_vehicles", "aircraft", or "ships"
+        vehicle_type: One of "train", "road_vehicle", "ship", or "aircraft"
     """
     vehicle_items = {
-        "trains": "Progressive Trains",
-        "road_vehicles": "Progressive Road Vehicules",
+        "train": "Progressive Trains",
+        "road_vehicle": "Progressive Road Vehicles",
+        "ship": "Progressive Ships",
         "aircraft": "Progressive Aircrafts",
-        "ships": "Progressive Ships",
     }
     
     item_name = vehicle_items.get(vehicle_type)
@@ -61,9 +68,16 @@ def has_cargo(state: CollectionState, player: int, cargo: str) -> bool:
     dependencies = CARGO_DEPENDENCIES.get(cargo, set())
     if dependencies:
         # At least one dependency must be met
-        return any(state.has(dep, player) for dep in dependencies)
+        if not any(state.has(dep, player) for dep in dependencies):
+            return False
     
-    return True
+    # Must have a vehicle that can transport this cargo type
+    vehicle_types = ["train", "road_vehicle", "ship", "aircraft"]
+    for vehicle_type in vehicle_types:
+        if has_vehicle_type(state, player, vehicle_type):
+            if cargo in VEHICULE_CARGO_COMPATIBILITY[vehicle_type]:
+                return True
+    return False
 
 
 def set_all_rules(world: "OpenTTDWorld") -> None:
@@ -75,31 +89,29 @@ def set_all_rules(world: "OpenTTDWorld") -> None:
     multiworld = world.multiworld
     player = world.player
     
-    # Define which locations require which items
-    location_rules = {
-        "Own {amount} trains": lambda state: has_vehicle_type(state, player, "trains"),
-        "Own {amount} road vehicles": lambda state: has_vehicle_type(state, player, "road_vehicles"),
-        "Own {amount} ships": lambda state: has_vehicle_type(state, player, "ships"),
-        "Own {amount} aircrafts": lambda state: has_vehicle_type(state, player, "aircraft"),
-        "Transport {amount} of Passengers": lambda state: has_cargo(state, player, "Passengers"),
-        "Transport {amount} of Mail": lambda state: has_cargo(state, player, "Mail"),
-        "Transport {amount} of Coal": lambda state: has_cargo(state, player, "Coal"),
-        "Transport {amount} of Oil": lambda state: has_cargo(state, player, "Oil"),
-        "Transport {amount} of Livestock": lambda state: has_cargo(state, player, "Livestock"),
-        "Transport {amount} of Goods": lambda state: has_cargo(state, player, "Goods"),
-        "Transport {amount} of Grain": lambda state: has_cargo(state, player, "Grain"),
-        "Transport {amount} of Wood": lambda state: has_cargo(state, player, "Wood"),
-        "Transport {amount} of Iron Ore": lambda state: has_cargo(state, player, "Iron Ore"),
-        "Transport {amount} of Steel": lambda state: has_cargo(state, player, "Steel"),
-        "Transport {amount} of Valuables": lambda state: has_cargo(state, player, "Valuables"),
-    }
-    
-    # Apply rules to locations
-    for location_name, rule in location_rules.items():
-        try:
-            location = multiworld.get_location(location_name, player)
-            location.access_rule = rule
-        except KeyError:
-            # Location doesn't exist (e.g., dynamically generated missions)
-            pass
+    for location in world.multiworld.get_locations(player):
+        name = location.name
 
+        # EARLY MISSIONS
+        if name == "Build your first station" or name == "Buy your first vehicle":
+            location.access_rule = lambda state: state.has_any(["Progressive Trains", "Progressive Road Vehicles", "Progressive Aircrafts", "Progressive Ships"], player)
+
+        # VEHICLE MISSIONS
+        if name.startswith("Own"):
+            if "train" in name:
+                location.access_rule = lambda state: has_vehicle_type(state, player, "train")
+            elif "road vehicle" in name:
+                location.access_rule = lambda state: has_vehicle_type(state, player, "road_vehicle")
+            elif "ship" in name:
+                location.access_rule = lambda state: has_vehicle_type(state, player, "ship")
+            elif "aircraft" in name:
+                location.access_rule = lambda state: has_vehicle_type(state, player, "aircraft")
+
+        # CARGO MISSIONS
+        elif name.startswith("Transport"):
+            for cargo in CARGO_TYPES:
+                if cargo in name:
+                    location.access_rule = lambda state, cargo=cargo: has_cargo(state, player, cargo)
+                    break
+
+    world.multiworld.completion_condition[player] = lambda state: state.has_all(("Passengers", "Mail", "Coal", "Oil", "Livestock", "Goods", "Grain", "Wood", "Iron Ore", "Steel", "Valuables"), world.player)

@@ -31,7 +31,7 @@ PROGRESSIVE_TRAINS: List[List[str]] = [[
     "Lev4 'Chimaera' (Electric)",
 ]]
 
-PROGRESSIVE_ROAD_VEHICULES: List[List[str]] = [[
+PROGRESSIVE_ROAD_VEHICLES: List[List[str]] = [[
     "MPS Regal Bus",
     "MPS Mail Truck",
     "Balogh Coal Truck",
@@ -124,25 +124,25 @@ PROGRESSIVE_SHIPS: List[List[str]] = [[
     "Bakewell 300 Hovercraft",
 ]]
 
-# Progressive items appear once per tier level
-PROGRESSIVE_VEHICLE_TIER_COUNTS = {
+PROGRESSIVE_VEHICLE_TIERS: Dict[str, int] = {
     "Progressive Trains": len(PROGRESSIVE_TRAINS),
-    "Progressive Road Vehicules": len(PROGRESSIVE_ROAD_VEHICULES),
+    "Progressive Road Vehicles": len(PROGRESSIVE_ROAD_VEHICLES),
     "Progressive Aircrafts": len(PROGRESSIVE_AIRCRAFT),
     "Progressive Ships": len(PROGRESSIVE_SHIPS),
 }
 
-PROGRESSIVE_VEHICLE_TIERS: Dict[str, int] = [
-    ("Progressive Trains",len(PROGRESSIVE_TRAINS)),
-    ("Progressive Road Vehicules",len(PROGRESSIVE_TRAINS)), 
-    ("Progressive Aircrafts",len(PROGRESSIVE_AIRCRAFT)),
-    ("Progressive Ships",len(PROGRESSIVE_SHIPS)), 
-]
-
 CARGO_TYPES = [  # Temperate
-        "Passengers", "Mail", "Coal", "Oil",
-        "Livestock", "Goods", "Grain", "Wood",
-        "Iron Ore", "Steel", "Valuables",
+        "Passengers", 
+        "Mail", 
+        "Coal", 
+        "Oil",
+        "Livestock", 
+        "Goods", 
+        "Grain", 
+        "Wood",
+        "Iron Ore", 
+        "Steel", 
+        "Valuables",
 ]
 
 FILLER_ITEMS: List[str] = [
@@ -152,7 +152,7 @@ FILLER_ITEMS: List[str] = [
 
 ITEM_NAME_TO_ID = {
     "Progressive Trains": 1,
-    "Progressive Road Vehicules": 2,
+    "Progressive Road Vehicles": 2,
     "Progressive Aircrafts": 3,
     "Progressive Ships": 4,
     "Passengers": 5,
@@ -172,7 +172,7 @@ ITEM_NAME_TO_ID = {
 
 DEFAULT_ITEM_CLASSIFICATION = {
     "Progressive Trains": ItemClassification.progression,
-    "Progressive Road Vehicules": ItemClassification.progression,
+    "Progressive Road Vehicles": ItemClassification.progression,
     "Progressive Aircrafts": ItemClassification.progression,
     "Progressive Ships": ItemClassification.progression,
     "Passengers": ItemClassification.progression,
@@ -201,8 +201,47 @@ def create_item_with_correct_classification(world: OpenTTDWorld, name: str) -> O
     return OpenTTDItem(name, classification, ITEM_NAME_TO_ID[name], world.player)
 
 def create_all_items(world: OpenTTDWorld) -> None:
+    # world.options.starting_vehicle_type
+    if world.options.starting_vehicle_type == 0:
+        starting_vehicle_type = world.random.choice(list(PROGRESSIVE_VEHICLE_TIERS.keys()))
+    elif world.options.starting_vehicle_type == 1:
+        starting_vehicle_type = "Progressive Trains"
+    elif world.options.starting_vehicle_type == 2:
+        starting_vehicle_type = "Progressive Road Vehicles"
+    elif world.options.starting_vehicle_type == 3:
+        starting_vehicle_type = "Progressive Aircrafts"
+    elif world.options.starting_vehicle_type == 4:
+        starting_vehicle_type = "Progressive Ships"
+
+    world.multiworld.push_precollected(world.create_item(starting_vehicle_type))
+    PROGRESSIVE_VEHICLE_TIERS[starting_vehicle_type] -= 1  # Remove one tier of the chosen vehicle type from the item pool, since it's precollected.    
+
+    # world.options.starting_cargo_type
+    if world.options.starting_cargo_type == 0:
+        starting_cargo_type = world.random.choice([c for c in CARGO_TYPES if c not in {"Goods", "Steel"}])
+    elif world.options.starting_cargo_type == 1:
+        starting_cargo_type = "Passengers"
+    elif world.options.starting_cargo_type == 2:    
+        starting_cargo_type = "Mail"
+    elif world.options.starting_cargo_type == 3:
+        starting_cargo_type = "Coal"
+    elif world.options.starting_cargo_type == 4:
+        starting_cargo_type = "Oil"
+    elif world.options.starting_cargo_type == 5:
+        starting_cargo_type = "Livestock"
+    elif world.options.starting_cargo_type == 6:
+        starting_cargo_type = "Grain"
+    elif world.options.starting_cargo_type == 7:
+        starting_cargo_type = "Wood"
+    elif world.options.starting_cargo_type == 8:
+        starting_cargo_type = "Iron Ore"
+    elif world.options.starting_cargo_type == 9:
+        starting_cargo_type = "Valuables"
+    world.multiworld.push_precollected(world.create_item(starting_cargo_type))
+    CARGO_TYPES.remove(starting_cargo_type)  # Remove the chosen cargo type from the item pool, since it's precollected.
+    
     itempool: list[Item] = []
-    for name , count in PROGRESSIVE_VEHICLE_TIERS:
+    for name , count in PROGRESSIVE_VEHICLE_TIERS.items():
         for _ in range(1, count + 1):
             itempool.append(create_item_with_correct_classification(world, name))
     for name in CARGO_TYPES:
@@ -213,13 +252,14 @@ def create_all_items(world: OpenTTDWorld) -> None:
     itempool += [world.create_filler() for _ in range(needed_number_of_filler_items)]
     world.multiworld.itempool += itempool
 
+    
 # Flatten all vehicles into a single list
-ALL_VEHICLES: List[str] = []
-for tier in PROGRESSIVE_TRAINS:
-    ALL_VEHICLES.extend(tier)
-for tier in PROGRESSIVE_ROAD_VEHICULES:
-    ALL_VEHICLES.extend(tier)
-for tier in PROGRESSIVE_AIRCRAFT:
-    ALL_VEHICLES.extend(tier)
-for tier in PROGRESSIVE_SHIPS:
-    ALL_VEHICLES.extend(tier)
+#ALL_VEHICLES: List[str] = []
+#for tier in PROGRESSIVE_TRAINS:
+#    ALL_VEHICLES.extend(tier)
+#for tier in PROGRESSIVE_ROAD_VEHICLES:
+#    ALL_VEHICLES.extend(tier)
+#for tier in PROGRESSIVE_AIRCRAFT:
+#    ALL_VEHICLES.extend(tier)
+#for tier in PROGRESSIVE_SHIPS:
+#    ALL_VEHICLES.extend(tier)

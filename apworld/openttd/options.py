@@ -10,15 +10,29 @@ from Options import (
 # ═══════════════════════════════════════════════════════════════
 
 class StartingVehicleType(Choice):
-    """Which vehicle type you start with.
-    'random' picks randomly from all transport types.
-    For all options, Starting Vehicle Count controls how many vehicles you receive."""
+    """Which vehicle type you start with."""
     display_name = "Starting Vehicle Type"
-    option_any           = 0
-    option_train         = 1
-    option_road_vehicle  = 2
-    option_aircraft      = 3
-    option_ship          = 4
+    option_any = 0
+    option_train = 1
+    option_road_vehicle = 2
+    option_aircraft = 3
+    option_ship = 4
+    default = 0
+
+class StartingCargoType(Choice):
+    """Which cargo type you start with.
+    Cannot start with Goods or Steel as they are dependent on other cargo types."""
+    display_name = "Starting Cargo Type"
+    option_any = 0
+    option_passengers = 1
+    option_mail = 2
+    option_coal = 3
+    option_oil = 4
+    option_livestock = 5
+    option_grain = 6
+    option_wood = 7
+    option_iron_ore = 8
+    option_valuables = 9
     default = 0
 
 
@@ -348,14 +362,74 @@ class VehicleBreakdowns(Choice):
     option_normal  = 2
     default = 1
 
+# ═══════════════════════════════════════════════════════════════
+#  MAIN OPTIONS DATACLASS
+# ═══════════════════════════════════════════════════════════════
+
+class OpenTTDDeathLink(DeathLink):
+    """When you die, everyone dies. When anyone else dies, you die.
+    Death is triggered by vehicle crashes. Off by default."""
+    default = 0
+
+
+@dataclass
+class OpenTTDOptions(PerGameCommonOptions):
+    # Randomizer
+    starting_vehicle_type:           StartingVehicleType
+    starting_cargo_type:             StartingCargoType
+    starting_cash_bonus:             StartingCashBonus
+    # World Generation
+    start_year:                      StartYear
+    map_size_x:                      MapSizeX
+    map_size_y:                      MapSizeY
+    landscape:                       Landscape
+    land_generator:                  LandGenerator
+    industry_density:                IndustryDensity
+    # Economy & Finance
+    infinite_money:                  InfiniteMoney
+    inflation:                       Inflation
+    max_loan:                        MaxLoan
+    infrastructure_maintenance:      InfrastructureMaintenance
+    vehicle_costs:                   VehicleCosts
+    construction_cost:               ConstructionCost
+    economy_type:                    EconomyType
+    bribe:                           Bribe
+    exclusive_rights:                ExclusiveRights
+    fund_buildings:                  FundBuildings
+    fund_roads:                      FundRoads
+    give_money:                      GiveMoney
+    town_cargo_scale:                TownCargoScale
+    industry_cargo_scale:            IndustryCargoScale
+    # Vehicles & Infrastructure
+    max_trains:                      MaxTrains
+    max_roadveh:                     MaxRoadVehicles
+    max_aircraft:                    MaxAircraft
+    max_ships:                       MaxShips
+    max_train_length:                MaxTrainLength
+    station_spread:                  StationSpread
+    road_stop_on_town_road:          RoadStopOnTownRoad
+    road_stop_on_competitor_road:    RoadStopOnCompetitorRoad
+    crossing_with_competitor:        CrossingWithCompetitor
+    road_side:                       RoadSide
+    # Towns & Environment
+    town_growth_rate:                TownGrowthRate
+    found_town:                      FoundTown
+    allow_town_roads:                AllowTownRoads
+    # Disasters & Accidents
+    disasters:                       Disasters
+    plane_crashes:                   PlaneCrashes
+    vehicle_breakdowns:              VehicleBreakdowns
+    # Death Link
+    death_link:                      OpenTTDDeathLink
 
 # ═══════════════════════════════════════════════════════════════
 #  OPTION GROUPS — defines the categories in the Options Creator
 # ═══════════════════════════════════════════════════════════════
 
-OPTION_GROUPS = [
-    OptionGroup("Randomizer", [
+openttd_option_groups = [
+    OptionGroup("Gameplay Options", [
         StartingVehicleType,
+        StartingCargoType,
         StartingCashBonus,
     ]),
     OptionGroup("World Generation", [
@@ -405,63 +479,3 @@ OPTION_GROUPS = [
         VehicleBreakdowns,
     ]),
 ]
-
-
-# ═══════════════════════════════════════════════════════════════
-#  MAIN OPTIONS DATACLASS
-# ═══════════════════════════════════════════════════════════════
-
-class OpenTTDDeathLink(DeathLink):
-    """When you die, everyone dies. When anyone else dies, you die.
-    Death is triggered by vehicle crashes. Off by default."""
-    default = 0
-
-
-@dataclass
-class OpenTTDOptions(PerGameCommonOptions):
-    # Randomizer
-    starting_vehicle_type:           StartingVehicleType
-    starting_cash_bonus:             StartingCashBonus
-    # World Generation
-    start_year:                      StartYear
-    map_size_x:                      MapSizeX
-    map_size_y:                      MapSizeY
-    landscape:                       Landscape
-    land_generator:                  LandGenerator
-    industry_density:                IndustryDensity
-    # Economy & Finance
-    infinite_money:                  InfiniteMoney
-    inflation:                       Inflation
-    max_loan:                        MaxLoan
-    infrastructure_maintenance:      InfrastructureMaintenance
-    vehicle_costs:                   VehicleCosts
-    construction_cost:               ConstructionCost
-    economy_type:                    EconomyType
-    bribe:                           Bribe
-    exclusive_rights:                ExclusiveRights
-    fund_buildings:                  FundBuildings
-    fund_roads:                      FundRoads
-    give_money:                      GiveMoney
-    town_cargo_scale:                TownCargoScale
-    industry_cargo_scale:            IndustryCargoScale
-    # Vehicles & Infrastructure
-    max_trains:                      MaxTrains
-    max_roadveh:                     MaxRoadVehicles
-    max_aircraft:                    MaxAircraft
-    max_ships:                       MaxShips
-    max_train_length:                MaxTrainLength
-    station_spread:                  StationSpread
-    road_stop_on_town_road:          RoadStopOnTownRoad
-    road_stop_on_competitor_road:    RoadStopOnCompetitorRoad
-    crossing_with_competitor:        CrossingWithCompetitor
-    road_side:                       RoadSide
-    # Towns & Environment
-    town_growth_rate:                TownGrowthRate
-    found_town:                      FoundTown
-    allow_town_roads:                AllowTownRoads
-    # Disasters & Accidents
-    disasters:                       Disasters
-    plane_crashes:                   PlaneCrashes
-    vehicle_breakdowns:              VehicleBreakdowns
-    # Death Link
-    death_link:                      OpenTTDDeathLink
