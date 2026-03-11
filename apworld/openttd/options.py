@@ -22,168 +22,6 @@ class StartingVehicleType(Choice):
     default = 0
 
 
-class StartingVehicleCount(Range):
-    """How many starting vehicles to receive.
-    For 'random', vehicles are drawn from all transport types.
-    For a specific type, all vehicles come from that type."""
-    display_name = "Starting Vehicle Count"
-    range_start = 1
-    range_end   = 20
-    default     = 3
-
-
-class WinCondition(Choice):
-    """What you need to do to win."""
-    display_name = "Win Condition"
-    option_company_value   = 0
-    option_town_population = 1
-    option_vehicle_count   = 2
-    option_cargo_delivered = 3
-    option_monthly_profit  = 4
-    default = 0
-
-
-class WinConditionCompanyValue(Range):
-    """Target company value in pounds (win condition: company value)."""
-    display_name = "Target Company Value (£)"
-    range_start = 1_000_000
-    range_end   = 10_000_000_000
-    default     = 50_000_000
-
-
-class WinConditionTownPopulation(Range):
-    """Target total world population across all towns combined (win condition: town population)."""
-    display_name = "Target Town Population"
-    range_start = 10_000
-    range_end   = 500_000
-    default     = 50_000
-
-
-class WinConditionVehicleCount(Range):
-    """Target number of vehicles running simultaneously (win condition: vehicle count)."""
-    display_name = "Target Vehicle Count"
-    range_start = 10
-    range_end   = 500
-    default     = 50
-
-
-class WinConditionCargoDelivered(Range):
-    """Total tons of cargo to deliver (win condition: cargo delivered)."""
-    display_name = "Target Cargo Delivered (tons)"
-    range_start = 100_000
-    range_end   = 100_000_000
-    default     = 1_000_000
-
-
-class WinConditionMonthlyProfit(Range):
-    """Monthly profit target in pounds (win condition: monthly profit)."""
-    display_name = "Target Monthly Profit (£)"
-    range_start = 100_000
-    range_end   = 100_000_000
-    default     = 1_000_000
-
-
-# ═══════════════════════════════════════════════════════════════
-#  SHOP OPTIONS
-# ═══════════════════════════════════════════════════════════════
-
-class TrapCount(Range):
-    """How many trap items to include in the item pool.
-    The total pool size is determined automatically from the available vehicles
-    for your chosen landscape and GRFs. Traps are distributed across locations
-    alongside vehicles and utility items."""
-    display_name = "Trap Count"
-    range_start = 0
-    range_end   = 50
-    default     = 10
-
-
-class UtilityCount(Range):
-    """How many utility items (cash injections, loan reductions, boosts) to include.
-    The remainder of the item pool is filled with vehicles for your landscape."""
-    display_name = "Utility Count"
-    range_start = 5
-    range_end   = 100
-    default     = 20
-
-
-class ShopRefreshDays(Range):
-    """How many in-game days between shop refreshes."""
-    display_name = "Shop Refresh (in-game days)"
-    range_start = 30
-    range_end   = 365
-    default     = 90
-
-
-class ShopPriceTier(Choice):
-    """
-    How expensive shop purchases are. Seven tiers from cheapest to most expensive.
-    If Shop Price Min or Shop Price Max are set to non-zero values below,
-    those sliders override this setting and this option is ignored.
-
-    Tier 1: £10,000 – £500,000
-    Tier 2: £50,000 – £1,000,000
-    Tier 3: £100,000 – £5,000,000
-    Tier 4: £500,000 – £15,000,000
-    Tier 5: £1,000,000 – £50,000,000
-    Tier 6: £5,000,000 – £150,000,000
-    Tier 7: £10,000,000 – £500,000,000
-    """
-    display_name = "Shop Price Tier"
-    option_tier_1_10k_500k         = 0
-    option_tier_2_50k_1m           = 1
-    option_tier_3_100k_5m          = 2
-    option_tier_4_500k_15m         = 3
-    option_tier_5_1m_50m           = 4
-    option_tier_6_5m_150m          = 5
-    option_tier_7_10m_500m         = 6
-    default = 0
-
-
-class ShopPriceMin(Range):
-    """
-    Custom minimum price (in pounds) for a shop purchase.
-    Set to 0 (default) to use the Shop Price Tier setting above.
-    If this or Shop Price Max is non-zero, the tier setting is disabled.
-    Range: £0 – £100,000,000
-    """
-    display_name = "Shop Price Minimum (£)  [overrides Tier if non-zero]"
-    range_start  = 0
-    range_end    = 100_000_000
-    default      = 0
-
-
-class ShopPriceMax(Range):
-    """
-    Custom maximum price (in pounds) for a shop purchase.
-    Set to 0 (default) to use the Shop Price Tier setting above.
-    If this or Shop Price Min is non-zero, the tier setting is disabled.
-    Must be greater than Shop Price Min.
-    Range: £0 – £500,000,000
-    """
-    display_name = "Shop Price Maximum (£)  [overrides Tier if non-zero]"
-    range_start  = 0
-    range_end    = 500_000_000
-    default      = 0
-
-class MissionDifficulty(Choice):
-    """Scales the target amounts in all generated missions up or down.
-    Does not affect vehicle/town/station counts — only monetary and cargo targets.
-
-    Very Easy: amounts × 0.25  — great for first-timers or short sessions
-    Easy:      amounts × 0.5
-    Normal:    amounts × 1.0  — the balanced default experience
-    Hard:      amounts × 2.0
-    Very Hard: amounts × 4.0  — for veteran players who want a serious challenge"""
-    display_name   = "Mission Difficulty"
-    option_very_easy = 0
-    option_easy      = 1
-    option_normal    = 2
-    option_hard      = 3
-    option_very_hard = 4
-    default = 2  # normal
-
-
 class StartingCashBonus(Choice):
     """Extra cash given to your company at the start of a session,
     on top of whatever loan you take. Helps new players build their
@@ -200,63 +38,6 @@ class StartingCashBonus(Choice):
     option_large       = 3
     option_very_large  = 4
     default = 0
-
-
-
-
-
-# ═══════════════════════════════════════════════════════════════
-#  TRAPS
-# ═══════════════════════════════════════════════════════════════
-
-class EnableTraps(Toggle):
-    """Whether trap items can be sent to you by other players."""
-    display_name = "Enable Traps"
-    default = 1
-
-
-
-class TrapBreakdownWave(Toggle):
-    """Enable 'Breakdown Wave' trap — all vehicles break down simultaneously."""
-    display_name = "Trap: Breakdown Wave"
-    default = 1
-
-
-class TrapRecession(Toggle):
-    """Enable 'Recession' trap — company money is halved."""
-    display_name = "Trap: Recession"
-    default = 0
-
-
-class TrapMaintenanceSurge(Toggle):
-    """Enable 'Maintenance Surge' trap — a large forced loan is added."""
-    display_name = "Trap: Maintenance Surge"
-    default = 1
-
-
-class TrapSignalFailure(Toggle):
-    """Enable 'Signal Failure' trap — trains are disrupted."""
-    display_name = "Trap: Signal Failure"
-    default = 1
-
-
-class TrapFuelShortage(Toggle):
-    """Enable 'Fuel Shortage' trap — vehicles run at reduced speed."""
-    display_name = "Trap: Fuel Shortage"
-    default = 1
-
-
-class TrapBankLoan(Toggle):
-    """Enable 'Bank Loan' trap — player is forced to take maximum loan."""
-    display_name = "Trap: Bank Loan"
-    default = 0
-
-
-class TrapIndustryClosure(Toggle):
-    """Enable 'Industry Closure' trap — a serviced industry closes."""
-    display_name = "Trap: Industry Closure"
-    default = 0
-
 
 # ═══════════════════════════════════════════════════════════════
 #  WORLD GENERATION
@@ -569,54 +350,13 @@ class VehicleBreakdowns(Choice):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  NEWGRF OPTIONS
-# ═══════════════════════════════════════════════════════════════
-
-class EnableIronHorse(Toggle):
-    """Enable Iron Horse train set (GPL v2, by andythenorth).
-    When enabled, ~100 additional British-inspired locomotives are added to
-    the item pool. The GRF is bundled with the patch and loaded automatically
-    at new game start — no manual installation required.
-    Iron Horse vehicles work on Temperate, Arctic and Tropical maps.
-    They are NOT available on Toyland maps."""
-    display_name = "Enable Iron Horse"
-    default = 0
-
-
-# ═══════════════════════════════════════════════════════════════
 #  OPTION GROUPS — defines the categories in the Options Creator
 # ═══════════════════════════════════════════════════════════════
 
 OPTION_GROUPS = [
     OptionGroup("Randomizer", [
-        TrapCount,
-        UtilityCount,
         StartingVehicleType,
-        StartingVehicleCount,
-        WinCondition,
-        WinConditionCompanyValue,
-        WinConditionTownPopulation,
-        WinConditionVehicleCount,
-        WinConditionCargoDelivered,
-        WinConditionMonthlyProfit,
-    ]),
-    OptionGroup("Shop", [
-        ShopRefreshDays,
-        ShopPriceTier,
-        ShopPriceMin,
-        ShopPriceMax,
-        MissionDifficulty,
         StartingCashBonus,
-    ]),
-    OptionGroup("Traps", [
-        EnableTraps,
-        TrapBreakdownWave,
-        TrapRecession,
-        TrapMaintenanceSurge,
-        TrapSignalFailure,
-        TrapFuelShortage,
-        TrapBankLoan,
-        TrapIndustryClosure,
     ]),
     OptionGroup("World Generation", [
         StartYear,
@@ -664,9 +404,6 @@ OPTION_GROUPS = [
         PlaneCrashes,
         VehicleBreakdowns,
     ]),
-    OptionGroup("NewGRFs", [
-        EnableIronHorse,
-    ]),
 ]
 
 
@@ -684,31 +421,7 @@ class OpenTTDDeathLink(DeathLink):
 class OpenTTDOptions(PerGameCommonOptions):
     # Randomizer
     starting_vehicle_type:           StartingVehicleType
-    starting_vehicle_count:          StartingVehicleCount
-    win_condition:                   WinCondition
-    win_condition_company_value:     WinConditionCompanyValue
-    win_condition_town_population:   WinConditionTownPopulation
-    win_condition_vehicle_count:     WinConditionVehicleCount
-    win_condition_cargo_delivered:   WinConditionCargoDelivered
-    win_condition_monthly_profit:    WinConditionMonthlyProfit
-    # Shop
-    trap_count:                      TrapCount
-    utility_count:                   UtilityCount
-    shop_refresh_days:               ShopRefreshDays
-    shop_price_tier:                 ShopPriceTier
-    shop_price_min:                  ShopPriceMin
-    shop_price_max:                  ShopPriceMax
-    mission_difficulty:              MissionDifficulty
     starting_cash_bonus:             StartingCashBonus
-    # Traps
-    enable_traps:                    EnableTraps
-    trap_breakdown_wave:             TrapBreakdownWave
-    trap_recession:                  TrapRecession
-    trap_maintenance_surge:          TrapMaintenanceSurge
-    trap_signal_failure:             TrapSignalFailure
-    trap_fuel_shortage:              TrapFuelShortage
-    trap_bank_loan:                  TrapBankLoan
-    trap_industry_closure:           TrapIndustryClosure
     # World Generation
     start_year:                      StartYear
     map_size_x:                      MapSizeX
@@ -750,7 +463,5 @@ class OpenTTDOptions(PerGameCommonOptions):
     disasters:                       Disasters
     plane_crashes:                   PlaneCrashes
     vehicle_breakdowns:              VehicleBreakdowns
-    # NewGRFs
-    enable_iron_horse:               EnableIronHorse
     # Death Link
     death_link:                      OpenTTDDeathLink

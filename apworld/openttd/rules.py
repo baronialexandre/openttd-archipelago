@@ -1,167 +1,105 @@
-from typing import TYPE_CHECKING, Dict
-from BaseClasses import MultiWorld, CollectionState
-from .items import ALL_VEHICLES
 
+from __future__ import annotations
+from typing import TYPE_CHECKING
+from BaseClasses import CollectionState
 if TYPE_CHECKING:
-    from . import OpenTTDWorld
+    from .world import OpenTTDWorld
 
+# Root cargos (no dependencies, can be starting cargo)
+ROOT_CARGOS = {"Passengers", "Mail", "Coal", "Oil", "Livestock", "Grain", "Wood", "Iron Ore", "Valuables"}
 
-def has_any_vehicle(state: CollectionState, player: int) -> bool:
-    """Player must have at least one vehicle unlocked."""
-    return any(state.has(v, player) for v in ALL_VEHICLES)
-
-
-def has_transport_vehicles(state: CollectionState, player: int, count: int = 3) -> bool:
-    """Player must have at least N vehicles unlocked."""
-    return sum(1 for v in ALL_VEHICLES if state.has(v, player)) >= count
-
-
-def has_trains(state: CollectionState, player: int) -> bool:
-    from .items import VANILLA_TRAINS
-    return any(state.has(t, player) for t in VANILLA_TRAINS)
-
-
-def has_road_vehicles(state: CollectionState, player: int) -> bool:
-    from .items import VANILLA_ROAD_VEHICLES
-    return any(state.has(rv, player) for rv in VANILLA_ROAD_VEHICLES)
-
-
-def has_aircraft(state: CollectionState, player: int) -> bool:
-    from .items import VANILLA_AIRCRAFT
-    return any(state.has(a, player) for a in VANILLA_AIRCRAFT)
-
-
-def has_ships(state: CollectionState, player: int) -> bool:
-    from .items import VANILLA_SHIPS
-    return any(state.has(s, player) for s in VANILLA_SHIPS)
-
-
-# ---------------------------------------------------------------------------
-# Mission type → access rule mapping
-# Used so that e.g. a "have trains" mission actually requires a train.
-# Falls back to has_any_vehicle for generic types.
-# ---------------------------------------------------------------------------
-_TYPE_RULES = {
-    "have trains":       lambda state, player: has_trains(state, player),
-    "have aircraft":     lambda state, player: has_aircraft(state, player),
-    "have ships":        lambda state, player: has_ships(state, player),
-    "have road vehicles":lambda state, player: has_road_vehicles(state, player),
-    "connect cities":    lambda state, player: has_trains(state, player) or has_road_vehicles(state, player),
-}
-
-# Mission types that require a train specifically (cargo types typically move by rail)
-_TRAIN_CARGO_KEYWORDS = {
-    "coal", "iron ore", "steel", "goods", "grain", "wood",
-    "livestock", "valuables",
+# Cargo dependencies in Temperate landscape based on industry chain:
+CARGO_DEPENDENCIES = {
+    "Passengers": set(),
+    "Mail": set(),
+    "Coal": set(),
+    "Oil": set(),
+    "Livestock": set(),
+    "Grain": set(),
+    "Wood": set(),
+    "Iron Ore": set(),
+    "Valuables": set(),            
+    "Steel": {"Iron Ore"},
+    "Goods": {"Wood", "Grain", "Livestock", "Steel", "Oil"},
 }
 
 
-def _rule_for_mission(mission: dict):
-    """Return the correct access rule lambda for a generated mission dict."""
-    mtype = mission.get("type", "")
-    unit  = mission.get("unit", "")
-
-    # Explicit type mapping
-    if mtype in _TYPE_RULES:
-        return _TYPE_RULES[mtype]
-
-    # Cargo missions: if unit mentions a train-only cargo, require trains
-    if mtype in ("transport cargo", "deliver tons to station", "deliver goods in year",
-                 "cargo_from_industry", "cargo_to_industry"):
-        cargo = mission.get("cargo", "").lower()
-        if any(k in cargo for k in _TRAIN_CARGO_KEYWORDS):
-            return lambda state, player: has_trains(state, player)
-
-    # Named passenger/mail missions only need any vehicle (bus/train both fine)
-    if mtype in ("passengers_to_town", "mail_to_town"):
-        return lambda state, player: has_any_vehicle(state, player)
-
-    # Unit-based fallback
-    if unit == "trains":
-        return lambda state, player: has_trains(state, player)
-    if unit == "aircraft":
-        return lambda state, player: has_aircraft(state, player)
-    if unit == "ships":
-        return lambda state, player: has_ships(state, player)
-    if unit == "road vehicles":
-        return lambda state, player: has_road_vehicles(state, player)
-
-    return lambda state, player: has_any_vehicle(state, player)
+def has_vehicle_type(state: CollectionState, player: int, vehicle_type: str) -> bool:
+    """Check if player has unlocked a specific vehicle type tier.
+    
+    Args:
+        state: The current game state
+        player: The player ID
+        vehicle_type: One of "trains", "road_vehicles", "aircraft", or "ships"
+    """
+    vehicle_items = {
+        "trains": "Progressive Trains",
+        "road_vehicles": "Progressive Road Vehicules",
+        "aircraft": "Progressive Aircrafts",
+        "ships": "Progressive Ships",
+    }
+    
+    item_name = vehicle_items.get(vehicle_type)
+    return item_name and state.has(item_name, player)
 
 
-def set_rules(world: "OpenTTDWorld") -> None:
-    player    = world.player
+def has_cargo(state: CollectionState, player: int, cargo: str) -> bool:
+    """Check if player has unlocked a cargo type.
+    
+    For dependent cargos (Goods, Steel, Valuables), this also checks that 
+    at least one required source cargo has been unlocked.
+    
+    Args:
+        state: The current game state
+        player: The player ID
+        cargo: The cargo type name
+    """
+    if not state.has(cargo, player):
+        return False
+    
+    # For dependent cargos, check that at least one source cargo is available
+    dependencies = CARGO_DEPENDENCIES.get(cargo, set())
+    if dependencies:
+        # At least one dependency must be met
+        return any(state.has(dep, player) for dep in dependencies)
+    
+    return True
+
+
+def set_all_rules(world: "OpenTTDWorld") -> None:
+    """Set access rules for locations.
+    
+    Vehicle missions require the corresponding progressive vehicle item.
+    Cargo missions require the cargo item and any necessary dependencies.
+    """
     multiworld = world.multiworld
+    player = world.player
+    
+    # Define which locations require which items
+    location_rules = {
+        "Own {amount} trains": lambda state: has_vehicle_type(state, player, "trains"),
+        "Own {amount} road vehicles": lambda state: has_vehicle_type(state, player, "road_vehicles"),
+        "Own {amount} ships": lambda state: has_vehicle_type(state, player, "ships"),
+        "Own {amount} aircrafts": lambda state: has_vehicle_type(state, player, "aircraft"),
+        "Transport {amount} of Passengers": lambda state: has_cargo(state, player, "Passengers"),
+        "Transport {amount} of Mail": lambda state: has_cargo(state, player, "Mail"),
+        "Transport {amount} of Coal": lambda state: has_cargo(state, player, "Coal"),
+        "Transport {amount} of Oil": lambda state: has_cargo(state, player, "Oil"),
+        "Transport {amount} of Livestock": lambda state: has_cargo(state, player, "Livestock"),
+        "Transport {amount} of Goods": lambda state: has_cargo(state, player, "Goods"),
+        "Transport {amount} of Grain": lambda state: has_cargo(state, player, "Grain"),
+        "Transport {amount} of Wood": lambda state: has_cargo(state, player, "Wood"),
+        "Transport {amount} of Iron Ore": lambda state: has_cargo(state, player, "Iron Ore"),
+        "Transport {amount} of Steel": lambda state: has_cargo(state, player, "Steel"),
+        "Transport {amount} of Valuables": lambda state: has_cargo(state, player, "Valuables"),
+    }
+    
+    # Apply rules to locations
+    for location_name, rule in location_rules.items():
+        try:
+            location = multiworld.get_location(location_name, player)
+            location.access_rule = rule
+        except KeyError:
+            # Location doesn't exist (e.g., dynamically generated missions)
+            pass
 
-    # Build a name → mission dict lookup from _generated_missions
-    missions_by_loc: Dict[str, dict] = {}
-    for m in getattr(world, "_generated_missions", []):
-        loc = m.get("location", "")
-        if loc:
-            missions_by_loc[loc] = m
-
-    # ------------------------------------------------------------------
-    # Easy missions: type-appropriate vehicle required
-    # ------------------------------------------------------------------
-    for loc in multiworld.get_region("mission_easy", player).locations:
-        mission = missions_by_loc.get(loc.name, {})
-        rule    = _rule_for_mission(mission)
-        # Capture rule in closure correctly
-        loc.access_rule = (lambda r: lambda state: r(state, player))(rule)
-
-    # ------------------------------------------------------------------
-    # Medium missions: type-appropriate vehicle + at least 3 total
-    # ------------------------------------------------------------------
-    for loc in multiworld.get_region("mission_medium", player).locations:
-        mission = missions_by_loc.get(loc.name, {})
-        rule    = _rule_for_mission(mission)
-        loc.access_rule = (
-            lambda r: lambda state: r(state, player) and has_transport_vehicles(state, player, 3)
-        )(rule)
-
-    # ------------------------------------------------------------------
-    # Hard missions: type-appropriate vehicle + at least 6 total
-    # ------------------------------------------------------------------
-    for loc in multiworld.get_region("mission_hard", player).locations:
-        mission = missions_by_loc.get(loc.name, {})
-        rule    = _rule_for_mission(mission)
-        loc.access_rule = (
-            lambda r: lambda state: r(state, player) and has_transport_vehicles(state, player, 6)
-        )(rule)
-
-    # ------------------------------------------------------------------
-    # Extreme missions: type-appropriate vehicle + at least 12 total
-    # ------------------------------------------------------------------
-    for loc in multiworld.get_region("mission_extreme", player).locations:
-        mission = missions_by_loc.get(loc.name, {})
-        rule    = _rule_for_mission(mission)
-        loc.access_rule = (
-            lambda r: lambda state: r(state, player) and has_transport_vehicles(state, player, 12)
-        )(rule)
-
-    # ------------------------------------------------------------------
-    # Shop: split on price — cheap half accessible with 1 vehicle,
-    # expensive half requires 4 vehicles (ensures sphere 2 exists)
-    # ------------------------------------------------------------------
-    shop_prices: Dict[str, int] = world._generate_shop_prices()
-
-    if shop_prices:
-        sorted_locs = sorted(shop_prices.keys(), key=lambda k: shop_prices[k])
-        midpoint    = len(sorted_locs) // 2
-        cheap_set   = set(sorted_locs[:midpoint])
-    else:
-        cheap_set = set()
-
-    for loc in multiworld.get_region("shop", player).locations:
-        if loc.name in cheap_set or not shop_prices:
-            # Cheap tier: just need any vehicle
-            loc.access_rule = lambda state: has_any_vehicle(state, player)
-        else:
-            # Expensive tier: need at least 4 vehicles
-            loc.access_rule = lambda state: has_transport_vehicles(state, player, 4)
-
-    # ------------------------------------------------------------------
-    # Victory
-    # ------------------------------------------------------------------
-    victory = multiworld.get_location("Goal_Victory", player)
-    victory.access_rule = lambda state: has_transport_vehicles(state, player, 10)
