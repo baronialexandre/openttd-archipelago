@@ -71,6 +71,8 @@
 #include "fileio_func.h"
 #include "safeguards.h"
 
+#include <array>
+
 /* Console log helpers */
 #define AP_LOG(msg)  IConsolePrint(CC_INFO,    "[AP] " + std::string(msg))
 #define AP_OK(msg)   IConsolePrint(CC_WHITE,   "[AP] " + std::string(msg))
@@ -84,6 +86,7 @@
 
 static std::map<std::string, CargoType> _ap_cargo_map;
 static bool _ap_cargo_map_built = false;
+static std::array<bool, NUM_CARGO> _ap_unlocked_cargo_types{};
 
 static void BuildCargoMap()
 {
@@ -102,30 +105,6 @@ static void BuildCargoMap()
 		{ "iron ore",    CT_IRON_ORE   },
 		{ "steel",       CT_STEEL      },
 		{ "valuables",   CT_VALUABLES  },
-		/* Arctic/tropical extras (no-ops in temperate, safe to map anyway) */
-		{ "wheat",       CT_WHEAT      },
-		{ "paper",       CT_PAPER      },
-		{ "gold",        CT_GOLD       },
-		{ "food",        CT_FOOD       },
-		{ "rubber",      CT_RUBBER     },
-		{ "fruit",       CT_FRUIT      },
-		{ "maize",       CT_MAIZE      },
-		{ "copper ore",  CT_COPPER_ORE },
-		{ "water",       CT_WATER      },
-		{ "diamonds",    CT_DIAMONDS   },
-		/* Toyland-only cargos — missing from this table caused AP_FindCargoType()
-		 * to return INVALID_CARGO, making Toyland transport missions fall back
-		 * to counting ALL cargo types instead of the specific one. */
-		{ "sugar",       CT_SUGAR        },
-		{ "toys",        CT_TOYS         },
-		{ "batteries",   CT_BATTERIES    },
-		{ "sweets",      CT_CANDY        },   /* in-game name "Sweets", label CT_CANDY */
-		{ "toffee",      CT_TOFFEE       },
-		{ "cola",        CT_COLA         },
-		{ "candyfloss",  CT_COTTON_CANDY },   /* in-game name "Candyfloss", label CT_COTTON_CANDY */
-		{ "bubbles",     CT_BUBBLES      },
-		{ "plastic",     CT_PLASTIC      },
-		{ "fizzy drinks",CT_FIZZY_DRINKS },
 	};
 
 	for (auto &[name, label] : kNameLabel) {
@@ -159,8 +138,7 @@ static CargoType AP_FindCargoType(const std::string &name)
 static uint64_t _ap_cumul_cargo[NUM_CARGO]      = {};  ///< Cargo delivered in completed periods
 static Money    _ap_cumul_profit                = 0;   ///< Profit earned in completed periods
 static bool     _ap_stats_initialized          = false;
-static bool     _ap_shop_purchased             = false; ///< True if player bought from shop this session
-static std::set<std::string> _ap_sent_shop_locations; ///< Shop locations already sent to AP server
+static std::map<std::string, int> _ap_received_item_counts; ///< Count of each received item (all types, for inventory display and win-condition checks)
 
 /** Snapshot of last-seen old_economy[0] values (for change detection) */
 static uint32_t _ap_snap_cargo[NUM_CARGO]       = {};
@@ -172,8 +150,6 @@ static void AP_InitSessionStats()
 	_ap_cumul_profit      = 0;
 	_ap_snap_profit       = 0;
 	_ap_stats_initialized = false;
-	_ap_shop_purchased    = false;
-	_ap_sent_shop_locations.clear();
 	if (!_ap_cargo_map_built) BuildCargoMap();
 }
 
@@ -217,7 +193,7 @@ static void AP_UpdateSessionStats()
 		Money period_profit = c->old_economy[0].income - c->old_economy[0].expenses;
 		_ap_cumul_profit += period_profit;
 		_ap_snap_profit   = period_profit;
-		Debug(misc, 1, "[AP] Economy period snapped. Cumulative profit: £{}", (int64_t)_ap_cumul_profit);
+		Debug(misc, 1, "[AP] Economy period snapped. Cumulative profit: ${}", (int64_t)_ap_cumul_profit);
 	}
 }
 
@@ -232,37 +208,12 @@ static uint64_t AP_GetTotalCargo(CargoType ct)
 	return _ap_cumul_cargo[ct] + cur;
 }
 
-/**
- * Get total profit this session: completed periods + current period.
- */
-static Money AP_GetTotalProfit()
-{
-	const Company *c = Company::GetIfValid(_local_company);
-	Money cur = (c != nullptr) ? Money(c->cur_economy.income - c->cur_economy.expenses) : Money(0);
-	return _ap_cumul_profit + cur;
-}
-
 /* -------------------------------------------------------------------------
  * Mission evaluation — called every ~5 s from the realtime timer.
  * For each incomplete mission, compute the current progress value and
  * check if the mission goal is met.  When met, send the location check
  * to the AP server and mark it completed.
  * ---------------------------------------------------------------------- */
-
-/**
- * Count distinct towns served by at least one station owned by local company.
- */
-static int AP_CountServicedTowns()
-{
-	CompanyID cid = _local_company;
-	std::set<const Town *> towns;
-	for (const Station *st : Station::Iterate()) {
-		if (st->owner == cid && st->town != nullptr) {
-			towns.insert(st->town);
-		}
-	}
-	return (int)towns.size();
-}
 
 /**
  * Count real stations (not waypoints) owned by local company.
@@ -316,9 +267,6 @@ static VehicleType AP_VehicleTypeFromUnit(const std::string &unit)
  */
 static bool EvaluateMission(APMission &m)
 {
-	const Company *c = Company::GetIfValid(_local_company);
-	if (c == nullptr) return false;
-
 	/* Safety: a mission with amount <= 0 would auto-complete immediately.
 	 * This should never happen after the Python fix, but guard here too. */
 	if (m.amount <= 0) {
@@ -350,23 +298,6 @@ static bool EvaluateMission(APMission &m)
 		}
 	}
 
-	/* ── "earn" type ────────────────────────────────────────────────────
-	 * Python now normalizes the type_key to:
-	 *   "earn monthly"  for "Earn £X in one month"
-	 *   "earn"          for "Earn £X total profit"
-	 * Also handle legacy UTF-8 £ keys for old saves. */
-	else if (m.type == "earn monthly" ||
-	         m.unit == "\xC2\xA3/month" || m.unit == "£/month") {
-		/* Monthly: income – expenses of last completed period */
-		current = (int64_t)(c->old_economy[0].income - c->old_economy[0].expenses);
-	}
-	else if (m.type == "earn" ||
-	         m.type == "earn \xC2\xA3" ||
-	         m.type == "earn (total)" || m.type == "earn total") {
-		/* Cumulative total profit */
-		current = (int64_t)AP_GetTotalProfit();
-	}
-
 	/* ── "have" type ───────────────────────────────────────────────────
 	 * "Have {amount} vehicles/trains/aircraft/road vehicles running simultaneously" */
 	else if (m.type == "have") {
@@ -374,71 +305,10 @@ static bool EvaluateMission(APMission &m)
 		current = (int64_t)AP_CountVehicles(vtype);
 	}
 
-	/* ── "service" type ────────────────────────────────────────────────
-	 * "Service {amount} different towns" */
-	else if (m.type == "service") {
-		current = (int64_t)AP_CountServicedTowns();
-	}
-
 	/* ── "build" type ──────────────────────────────────────────────────
 	 * "Build {amount} stations" */
 	else if (m.type == "build") {
 		current = (int64_t)AP_CountStations();
-	}
-
-	/* ── "deliver" type ────────────────────────────────────────────────
-	 * "Deliver {amount} tons of {cargo} to one station"
-	 * "Deliver {amount} tons of goods in one year"
-	 * Approximated by cumulative cargo of that type. */
-	else if (m.type == "deliver") {
-		CargoType ct = AP_FindCargoType(m.cargo);
-		if (IsValidCargoType(ct)) {
-			current = (int64_t)AP_GetTotalCargo(ct);
-		} else {
-			/* "goods in one year" — check last period's goods delivery */
-			CargoType goods_ct = AP_FindCargoType("goods");
-			if (IsValidCargoType(goods_ct))
-				current = (int64_t)c->old_economy[0].delivered_cargo[goods_ct];
-		}
-	}
-
-	/* ── "connect" type ────────────────────────────────────────────────
-	 * "Connect {amount} cities with rail"
-	 * Approximated by towns with at least one rail station. */
-	else if (m.type == "connect") {
-		/* Count towns that have at least one station with train facilities */
-		CompanyID cid = _local_company;
-		std::set<const Town *> rail_towns;
-		for (const Station *st : Station::Iterate()) {
-			if (st->owner == cid && st->town != nullptr &&
-			    st->facilities.Test(StationFacility::Train)) {
-				rail_towns.insert(st->town);
-			}
-		}
-		current = (int64_t)rail_towns.size();
-	}
-
-	/* ── "maintain_75" type ────────────────────────────────────────────
-	 * Python emits normalized type "maintain_75".
-	 * m.amount = number of consecutive months required.
-	 * m.maintain_months_ok = counter managed by the monthly calendar timer.
-	 * Legacy: also accept old raw template-prefix strings from saves <= beta 8. */
-	else if (m.type == "maintain_75" ||
-	         m.type.find("maintain") != std::string::npos) {
-		current = (int64_t)m.maintain_months_ok;
-	}
-
-	/* ── "buy a vehicle from the shop" ────────────────────────────────
-	 * Triggered when player buys anything from the AP shop. */
-	else if (m.type == "buy a vehicle from the shop" || m.type == "buy") {
-		current = _ap_shop_purchased ? 1 : 0;
-	}
-
-	/* ── named-destination missions ────────────────────────────────────
-	 * Progress is accumulated monthly by AP_UpdateNamedMissions(). */
-	else if (m.type == "passengers_to_town" || m.type == "mail_to_town" ||
-	         m.type == "cargo_from_industry" || m.type == "cargo_to_industry") {
-		current = (int64_t)m.named_entity.cumulative;
 	}
 
 	/* Update live progress on the mission (visible in missions window) */
@@ -560,6 +430,13 @@ bool AP_IsActive()
 	       _ap_client->GetState() == APState::AUTHENTICATED;
 }
 
+bool AP_IsCargoTypeUnlocked(uint8_t cargo_type)
+{
+	if (cargo_type >= NUM_CARGO) return false;
+	if (!AP_IsActive()) return true;
+	return _ap_unlocked_cargo_types[cargo_type];
+}
+
 /* -------------------------------------------------------------------------
  * AP_SendSay — forward a chat/command string to the AP server.
  * Used by the "ap" console command so players can type AP server commands
@@ -618,144 +495,80 @@ void AP_RegisterConsoleCommands()
  *   - Toolbar invalidation
  * ---------------------------------------------------------------------- */
 
+// Unlock all engines in a progressive tier for a given progressive item name
+
+/* Progressive vehicle tier table — vehicle names per tier per item.
+ * Kept at file scope so AP_GetProgressiveTiers() can expose it to the GUI. */
+static const std::map<std::string, std::vector<std::vector<std::string>>> _ap_progressive_tiers = {
+    {"Progressive Trains", {
+        {"Kirby Paul Tank (Steam)", "Chaney 'Jubilee' (Steam)", "Ginzu 'A4' (Steam)", "SH '8P' (Steam)"},
+        {"Manley-Morel DMU (Diesel)", "'Dash' (Diesel)", "SH/Hendry '25' (Diesel)", "UU '37' (Diesel)", "Floss '47' (Diesel)", "SH '125' (Diesel)"},
+        {"SH '30' (Electric)", "SH '40' (Electric)", "'AsiaStar' (Electric)", "'T.I.M.' (Electric)"},
+        {"'X2001' (Electric)", "'Millennium Z1' (Electric)"},
+        {"Lev1 'Leviathan' (Electric)", "Lev2 'Cyclops' (Electric)", "Lev3 'Pegasus' (Electric)", "Lev4 'Chimaera' (Electric)"}
+    }},
+    {"Progressive Road Vehicles", {
+        {"MPS Regal Bus", "MPS Mail Truck", "Balogh Coal Truck", "Hereford Grain Truck", "Balogh Goods Truck", "Witcombe Oil Tanker", "Witcombe Wood Truck", "MPS Iron Ore Truck", "Balogh Steel Truck", "Balogh Armoured Truck", "Talbott Livestock Van"},
+        {"Hereford Leopard Bus", "Perry Mail Truck", "Uhl Coal Truck", "Thomas Grain Truck", "Craighead Goods Truck", "Foster Oil Tanker", "Foster Wood Truck", "Uhl Iron Ore Truck", "Uhl Steel Truck", "Uhl Armoured Truck", "Uhl Livestock Van"},
+        {"Foster Bus", "Reynard Mail Truck", "DW Coal Truck", "Goss Grain Truck", "Goss Goods Truck", "Perry Oil Tanker", "Moreland Wood Truck", "Chippy Iron Ore Truck", "Kelling Steel Truck", "Foster Armoured Truck", "Foster Livestock Van"},
+        {"Foster MkII Superbus"}
+    }},
+    {"Progressive Aircrafts", {
+        {"Sampson U52", "Bakewell Cotswald LB-3", "Coleman Count"},
+        {"FFP Dart", "Bakewell Luckett LB-8", "Darwin 100", "Yate Aerospace YAC 1-11", "Bakewell Luckett LB-9", "Tricario Helicopter", "Guru X2 Helicopter"},
+        {"Darwin 200", "Darwin 300", "Yate Haugan", "Guru Galaxy", "Bakewell Luckett LB-10", "Airtaxi A21", "Bakewell Luckett LB80", "Yate Aerospace YAe46", "Darwin 400", "Darwin 500", "Airtaxi A31", "Dinger 100", "Airtaxi A32", "Bakewell Luckett LB-11", "Darwin 600", "Airtaxi A33"},
+        {"AirTaxi A34-1000", "Dinger 1000", "Dinger 200", "Yate Z-Shuttle", "Kelling K1", "Kelling K6", "FFP Hyperdart 2", "Kelling K7", "Darwin 700"}
+    }},
+    {"Progressive Ships", {
+        {"MPS Passenger Ferry", "MPS Oil Tanker", "Yate Cargo Ship"},
+        {"FFP Passenger Ferry", "CS-Inc. Oil Tanker", "Bakewell Cargo Ship"},
+        {"Bakewell 300 Hovercraft"}
+    }}
+};
+
+/* Tracks how many tiers have been unlocked per progressive item this session. */
+static std::map<std::string, int> _ap_unlocked_tier_counts;
+
+const std::map<std::string, std::vector<std::vector<std::string>>> &AP_GetProgressiveTiers() { return _ap_progressive_tiers; }
+const std::map<std::string, int>                                   &AP_GetUnlockedTierCounts() { return _ap_unlocked_tier_counts; }
+
 static bool AP_UnlockEngineByName(const std::string &name)
 {
-	CompanyID cid = _local_company;
-	if (cid >= MAX_COMPANIES) return false;
+    CompanyID cid = _local_company;
+    if (cid >= MAX_COMPANIES) return false;
+    if (!_ap_engine_map_built) BuildEngineMap();
 
-	if (!_ap_engine_map_built) BuildEngineMap();
+    // Define progressive tiers based on Python source of truth
+    const auto &progressive_tiers = _ap_progressive_tiers;
 
-	/* Alias map: old/wrong AP item names → correct OpenTTD 15.2 engine string names.
-	 * Needed for backward-compat with saves generated before items.py was corrected. */
-	static const std::map<std::string, std::string> aliases = {
-		/* Trains — wrong name → correct name */
-		{"Wills 2-8-0",               "Wills 2-8-0 (Steam)"},
-		{"Kirby Paul Tank Engine",    "Kirby Paul Tank (Steam)"},
-		{"MJS 250",                   "MJS 250 (Diesel)"},
-		{"Mightymover Choo-Choo",     "MightyMover Choo-Choo"},
-		{"Turner Turbo",              "Turner Turbo (Diesel)"},
-		{"MJS 1000",                  "MJS 1000 (Diesel)"},
-		{"SH/Hendry 25",              "SH/Hendry '25' (Diesel)"},
-		{"Manley-Morel DMU",          "Manley-Morel DMU (Diesel)"},
-		{"Dash",                      "'Dash' (Diesel)"},
-		{"AsiaStar",                  "'AsiaStar' (Electric)"},
-		{"SH 8P",                     "SH '8P' (Steam)"},
-		{"Ginzu 'A4'",                "Ginzu 'A4' (Steam)"},
-		{"SH 'Chaperon'",             "SH '30' (Electric)"},
-		{"Lev1 'Leviathan'",          "Lev1 'Leviathan' (Electric)"},
-		{"Lev2 'Cyclops'",            "Lev2 'Cyclops' (Electric)"},
-		{"Lev3 'Pegasus'",            "Lev3 'Pegasus' (Electric)"},
-		{"Lev4 'Chimaera'",           "Lev4 'Chimaera' (Electric)"},
-		{"Lev 'TransRapid'",          "Wizzowow Rocketeer"},
-		{"Lev 'Fasttrack'",           "Wizzowow Z99"},
-		{"Lev 'Bullet'",              "SH '40' (Electric)"},
-		/* Wagons */
-		{"Armored Van",               "Armoured Van"},
-		{"Valuables Van",             "Armoured Van"},   /* doesn't exist — valuables use Armoured Van */
-		/* Road vehicles */
-		{"Foster MkII Bus",           "Foster MkII Superbus"},
-		{"Ploddyphut 10-inch Bus",    "Ploddyphut MkI Bus"},
-		{"Fellini 105 Bus",           "Ploddyphut MkII Bus"},
-		{"MPS Magic Plus Bus",        "Ploddyphut MkIII Bus"},
-		{"Balogh Mail Truck",         "MPS Mail Truck"},
-		{"Uhl Mail Truck",            "Perry Mail Truck"},
-		{"Kelling 3100 Mail Truck",   "Reynard Mail Truck"},
-		{"Kelling 3100 Coal Truck",   "DW Coal Truck"},
-		{"Balogh Grain Truck",        "Hereford Grain Truck"},
-		{"Uhl Grain Truck",           "Goss Grain Truck"},
-		{"Kelling 3100 Grain Truck",  "Thomas Grain Truck"},
-		{"Uhl Goods Truck",           "Goss Goods Truck"},
-		{"Kelling 3100 Goods Truck",  "Craighead Goods Truck"},
-		{"Balogh Oil Tanker",         "Witcombe Oil Tanker"},
-		{"Uhl Oil Tanker",            "Perry Oil Tanker"},
-		{"Kelling 3100 Oil Tanker",   "Foster Oil Tanker"},
-		{"Balogh Wood Truck",         "Witcombe Wood Truck"},
-		{"Uhl Wood Truck",            "Moreland Wood Truck"},
-		{"Kelling 3100 Wood Truck",   "Foster Wood Truck"},
-		{"Balogh Iron Ore Truck",     "MPS Iron Ore Truck"},
-		{"Kelling 3100 Iron Ore Truck","Chippy Iron Ore Truck"},
-		{"Kelling 3100 Steel Truck",  "Kelling Steel Truck"},
-		{"Balogh Valuables Truck",    "Balogh Armoured Truck"},
-		{"Uhl Valuables Truck",       "Uhl Armoured Truck"},
-		{"Kelling 3100 Valuables Truck","Foster Armoured Truck"},
-		{"Balogh Livestock Truck",    "Talbott Livestock Van"},
-		{"Uhl Livestock Truck",       "Uhl Livestock Van"},
-		{"Kelling 3100 Livestock Truck","Foster Livestock Van"},
-		/* Aircraft */
-		{"Dinger 100-Series",         "Dinger 100"},
-		{"Dinger 200-Series",         "Dinger 200"},
-		{"Dinger 1000-Series",        "Dinger 1000"},
-		{"AEI Super 49",              "Darwin 400"},
-		{"Yate Aerospace YAC 1000",   "Yate Aerospace YAe46"},
-		{"Kalmar Industries TK1",     "Kelling K1"},
-		{"Chugsworth Academy Bullet", "Kelling K6"},
-		/* Ships */
-		{"Bakewell Lake Cruiser",        "Bakewell Cargo Ship"},
-		{"Chugsworth Packet",            "Chugger-Chug Passenger Ferry"},
-		{"Shackleton Hacker",            "Yate Cargo Ship"},
-		{"Bakewell Cotswald Coal Barge", "MightyMover Cargo Ship"},
-		{"Uhl Coal Tanker",              "CS-Inc. Oil Tanker"},
-		{"Bakewell Wet Cargo Barge",     "Bakewell 300 Hovercraft"},
-		{"Kelling VTOL",                 "Powernaut Cargo Ship"},
-	};
+    // Track which tier is unlocked for each progressive item
+    auto &unlocked_tiers = _ap_unlocked_tier_counts;
 
-	/* Resolve alias if needed */
-	std::string resolved = name;
+    auto prog = progressive_tiers.find(name);
+    if (prog != progressive_tiers.end()) {
+        int &tier = unlocked_tiers[name];
+        if (tier >= (int)prog->second.size()) return false; // All tiers unlocked
+        const auto &vehicles = prog->second[tier];
+        for (const std::string &veh : vehicles) {
+            auto it = _ap_engine_map.find(veh);
+            if (it != _ap_engine_map.end()) {
+                Engine *e = Engine::GetIfValid(it->second);
+                if (e) {
+                    _ap_unlocked_engine_ids.insert(it->second);
+                    e->flags.Set(EngineFlag::Available);
+                    EnableEngineForCompany(it->second, cid);
+                }
+            }
+        }
+        InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
+        Debug(misc, 0, "[AP] Progressive tier unlocked: {} tier {}", name, tier+1);
+        tier++;
+        return true;
+    }
 
-	/* Iron Horse engines are prefixed "IH: " in AP item names to avoid
-	 * collisions with vanilla engines (e.g. "IH: Dragon" vs vanilla "Dragon").
-	 * Strip the prefix before looking up in the engine map — Iron Horse
-	 * registers its vehicles with plain names like "4-4-2 Lark". */
-	static const std::string ih_prefix = "IH: ";
-	if (resolved.size() > ih_prefix.size() &&
-	    resolved.substr(0, ih_prefix.size()) == ih_prefix) {
-		resolved = resolved.substr(ih_prefix.size());
-		Debug(misc, 1, "[AP] Iron Horse prefix stripped: '{}' → '{}'", name, resolved);
-	}
-
-	auto alias_it = aliases.find(resolved);
-	if (alias_it != aliases.end()) {
-		resolved = alias_it->second;
-		Debug(misc, 1, "[AP] Engine alias: '{}' → '{}'", name, resolved);
-	}
-
-	auto it = _ap_engine_map.find(resolved);
-	if (it == _ap_engine_map.end()) {
-		Debug(misc, 1, "[AP] UnlockEngine: '{}' (resolved: '{}') not found in engine map",
-		      name, resolved);
-		return false;
-	}
-
-	Engine *e = Engine::GetIfValid(it->second);
-	if (e == nullptr) return false;
-
-	/* Track that AP has explicitly unlocked this engine — the periodic
-	 * re-lock sweep will not re-lock engines present in this set. */
-	_ap_unlocked_engine_ids.insert(it->second);
-
-	/* Set EngineFlag::Available so the engine appears in the build-vehicle list.
-	 * EnableEngineForCompany() only sets company_avail, but the build-vehicle
-	 * window also checks EngineFlag::Available before showing any engine. */
-	e->flags.Set(EngineFlag::Available);
-	EnableEngineForCompany(it->second, cid);
-
-	/* Unlock any additional engines that share this name (e.g. all three
-	 * "Oil Tanker" wagon variants — Rail, Monorail, Maglev). */
-	auto extras_it = _ap_engine_extras.find(resolved);
-	if (extras_it != _ap_engine_extras.end()) {
-		for (EngineID extra_eid : extras_it->second) {
-			Engine *extra_e = Engine::GetIfValid(extra_eid);
-			if (extra_e == nullptr) continue;
-			_ap_unlocked_engine_ids.insert(extra_eid);
-			extra_e->flags.Set(EngineFlag::Available);
-			EnableEngineForCompany(extra_eid, cid);
-		}
-	}
-
-	/* Explicitly invalidate the build-vehicle window so the new engine shows up */
-	InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
-	Debug(misc, 0, "[AP] Engine unlocked: {}", resolved);
-	return true;
+    // Item name not recognized as a progressive tier
+    Debug(misc, 1, "[AP] UnlockEngine: '{}' not a recognized progressive item", name);
+    return false;
 }
 
 /* -------------------------------------------------------------------------
@@ -764,12 +577,20 @@ static bool AP_UnlockEngineByName(const std::string &name)
 
 static void AP_ShowNews(const std::string &text)
 {
-	IConsolePrint(CC_INFO, "[AP] " + text);
-	Debug(misc, 0, "[AP] {}", text);
+	/* Normalize server/client messages so console/news never show duplicated
+	 * tags like "[AP] [AP] ...". */
+	std::string clean = text;
+	while (clean.rfind("[AP]", 0) == 0) {
+		clean.erase(0, 4);
+		while (!clean.empty() && clean[0] == ' ') clean.erase(0, 1);
+	}
+
+	IConsolePrint(CC_INFO, "[AP] " + clean);
+	Debug(misc, 0, "[AP] {}", clean);
 
 	if (_game_mode == GM_NORMAL) {
 		AddNewsItem(
-			GetEncodedString(STR_ARCHIPELAGO_NEWS, text),
+			GetEncodedString(STR_ARCHIPELAGO_NEWS, clean),
 			NewsType::General,
 			NewsStyle::Small,
 			{}
@@ -785,12 +606,8 @@ static APSlotData  _ap_pending_sd;
 static bool        _ap_pending_world_start         = false;
 static bool        _ap_goal_sent                   = false;
 static bool        _ap_session_started             = false; ///< True once we've done first-tick setup in GM_NORMAL
-static int         _ap_fuel_shortage_ticks         = 0;     ///< >0 while fuel shortage slowdown is active
-static int         _ap_cargo_bonus_ticks           = 0;     ///< >0 while 2x cargo payment is active (240 ticks = 60s)
-static int         _ap_reliability_boost_ticks     = 0;     ///< >0 while reliability boost active (90 game-days)
-static int         _ap_station_boost_ticks         = 0;     ///< >0 while station rating boost active (30 game-days)
+static bool        _ap_menu_connect_start_new      = true;  ///< Menu connect mode: true=start new world, false=load save
 
-bool AP_GetCargoBonusActive() { return _ap_cargo_bonus_ticks > 0; }
 
 /* Bug B fix: reset per-connection, not global-ever */
 static bool        _ap_world_started_this_session  = false;
@@ -803,9 +620,15 @@ static std::vector<APItem> _ap_pending_items;
 std::atomic<bool> _ap_status_dirty{ false };
 
 /* Public accessors */
-const APSlotData &AP_GetSlotData() { return _ap_pending_sd; }
+const APSlotData                   &AP_GetSlotData()           { return _ap_pending_sd; }
+const std::map<std::string, int>   &AP_GetReceivedItemCounts() { return _ap_received_item_counts; }
 bool              AP_IsConnected()  { return _ap_client != nullptr &&
                                      _ap_client->GetState() == APState::AUTHENTICATED; }
+
+void AP_SetMenuConnectStartNew(bool start_new)
+{
+	_ap_menu_connect_start_new = start_new;
+}
 
 /* -------------------------------------------------------------------------
  * Callbacks
@@ -817,33 +640,28 @@ static void AP_AssignNamedEntities();
 static void AP_OnSlotData(const APSlotData &sd)
 {
 	AP_OK("[CALLBACK] AP_OnSlotData called on main thread!");
-	Debug(misc, 1, "[AP] Slot data received. {} missions, win={} target={}, start_year={}",
-	      sd.missions.size(), (int)sd.win_condition, sd.win_condition_value, sd.start_year);
+	Debug(misc, 1, "[AP] Slot data received. {} missions, start_year={}",
+	      sd.missions.size(), sd.start_year);
 
 	_ap_pending_sd      = sd;
 	_ap_session_started = false; /* reset so first-tick setup runs again */
 	_ap_goal_sent       = false;
 	_ap_engine_map_built = false; /* rebuild map for new session */
 	_ap_cargo_map_built  = false; /* rebuild cargo map for new session */
+	_ap_unlocked_cargo_types.fill(false);
 	_ap_status_dirty.store(true);
 
-	/* Only auto-start world if we're on the main menu and haven't started yet */
-	if (_game_mode == GM_MENU && !_ap_world_started_this_session) {
+	/* Only auto-start world if we're on the main menu, start-new mode is selected,
+	 * and we haven't already started a world for this connection session. */
+	if (_game_mode == GM_MENU && _ap_menu_connect_start_new && !_ap_world_started_this_session) {
+		_ap_client->ResetReceivedItemsIndex(); /* fresh game — treat all incoming items as new */
 		_ap_world_started_this_session = true;
 		_ap_pending_world_start        = true;
 		AP_OK(fmt::format("Slot data ready — scheduling world generation (year={}, map={}x{})",
 		      sd.start_year, (1 << sd.map_x), (1 << sd.map_y)));
 	} else {
-		AP_ERR(fmt::format("[OnSlotData] World start SKIPPED: game_mode={} world_started={}",
-		      (int)_game_mode, _ap_world_started_this_session));
-
-		/* If already in GM_NORMAL (reconnect/reload), assign named entities
-		 * immediately — first-tick setup may have already fired before this
-		 * slot_data arrived, so we can't rely on it to re-run. */
-		if (_game_mode == GM_NORMAL) {
-			AP_AssignNamedEntities();
-			_ap_status_dirty.store(true);
-		}
+		AP_ERR(fmt::format("[OnSlotData] World start SKIPPED: game_mode={} start_new_mode={} world_started={}",
+		      (int)_game_mode, _ap_menu_connect_start_new, _ap_world_started_this_session));
 
 		ShowArchipelagoStatusWindow();
 	}
@@ -851,7 +669,7 @@ static void AP_OnSlotData(const APSlotData &sd)
 
 static void AP_OnItemReceived(const APItem &item)
 {
-	Debug(misc, 1, "[AP] Item received: '{}' (id={})", item.item_name, item.item_id);
+	Debug(misc, 1, "[AP] Item received: '{}' (id={}) replay={}", item.item_name, item.item_id, item.is_replay);
 
 	/* Queue items that arrive before we've entered GM_NORMAL */
 	if (!_ap_session_started) {
@@ -864,192 +682,51 @@ static void AP_OnItemReceived(const APItem &item)
 		return;
 	}
 
-	/* Vehicle unlock — delegate entirely to EnableEngineForCompany */
+	const bool is_replay = item.is_replay;
+
+	/* Track every received item for the inventory window. */
+	_ap_received_item_counts[item.item_name]++;
+	_ap_status_dirty.store(true);
+
+	/* Progressive vehicle unlock — delegate entirely to EnableEngineForCompany */
 	if (AP_UnlockEngineByName(item.item_name)) {
-		AP_ShowNews("[AP] Unlocked: " + item.item_name);
+		if (!is_replay) AP_ShowNews("Unlocked: " + item.item_name);
 		return;
 	}
 
-	/* Trap / utility items */
-	CompanyID cid = _local_company;
-	if (cid >= MAX_COMPANIES) return;
-	Company *c = Company::GetIfValid(cid);
-	if (c == nullptr) return;
-
-	/* ── TRAPS ─────────────────────────────────────────── */
-	if (item.item_name == "Breakdown Wave") {
-		for (Vehicle *v : Vehicle::Iterate()) {
-			if (v->owner == cid && v->IsPrimaryVehicle()) {
-				v->breakdown_chance = 255;
-				v->reliability = 1;
-			}
+	/* -- Cargo type items ----------------------------------------- */
+	static const std::set<std::string> CARGO_ITEM_NAMES = {
+		"Passengers", "Mail", "Coal", "Oil", "Livestock", "Goods",
+		"Grain", "Wood", "Iron Ore", "Steel", "Valuables"
+	};
+	if (CARGO_ITEM_NAMES.count(item.item_name)) {
+		CargoType ct = AP_FindCargoType(item.item_name);
+		if (IsValidCargoType(ct) && ct < NUM_CARGO) {
+			_ap_unlocked_cargo_types[ct] = true;
 		}
-		AP_ShowNews("[AP] TRAP: Breakdown Wave hit!");
-	} else if (item.item_name == "Recession") {
-		if (c->money >= 0) {
-			/* Player has positive cash: halve it */
-			c->money = c->money / 2;
-			AP_ShowNews("[AP] TRAP: Recession! Money halved.");
-		} else {
-			/* Player already in debt: add 25% of max_loan as extra debt */
-			Money penalty = (Money)((int64_t)_ap_pending_sd.max_loan / 4);
-			c->money -= penalty;
-			AP_ShowNews(fmt::format("[AP] TRAP: Recession! Extra debt: \xc2\xa3{}.", (long long)penalty));
-		}
-	} else if (item.item_name == "Maintenance Surge") {
-		/* Add a moderate fixed loan increment, capped at max_loan from slot_data
-		 * so it stays proportional to the session's economy settings. */
-		Money loan_cap = (Money)std::max((int64_t)_ap_pending_sd.max_loan,
-		                                 (int64_t)300000LL);
-		Money new_l = c->current_loan + (Money)(loan_cap / 4); /* +25% of max_loan */
-		c->current_loan = std::min(new_l, loan_cap);
-		AP_ShowNews("[AP] TRAP: Maintenance Surge! Emergency costs added to your loan.");
-	} else if (item.item_name == "Bank Loan Forced") {
-		/* Scale loan to the session's configured max_loan rather than a
-		 * hardcoded 500 M that would be impossible to repay early-game. */
-		Money forced_loan = (Money)_ap_pending_sd.max_loan;
-		if (forced_loan <= 0) forced_loan = (Money)300000LL; /* sane fallback */
-		c->current_loan = std::min(c->current_loan + forced_loan,
-		                           forced_loan * 2); /* cap at 2× max_loan */
-		{
-			int64_t fl = (int64_t)forced_loan;
-			std::string loan_str = (fl >= 1000000)
-			    ? fmt::format("\xC2\xA3{:.1f}M", fl / 1000000.0)
-			    : fmt::format("\xC2\xA3{}k",     fl / 1000);
-			AP_ShowNews("[AP] TRAP: Bank Loan Forced! +" + loan_str);
-		}
-	} else if (item.item_name == "Signal Failure") {
-		for (Vehicle *v : Vehicle::Iterate()) {
-			if (v->owner == cid && v->IsPrimaryVehicle() && v->type == VEH_TRAIN) {
-				/* ctr=2 is the "about to break down" trigger state — this
-				 * stops the train and plays the breakdown sound.
-				 * ctr=1 is "already counting down" which has no visible effect. */
-				if (v->breakdown_ctr == 0) {
-					v->breakdown_ctr   = 2;
-					v->breakdown_delay = 255;
-				}
-			}
-		}
-		AP_ShowNews("[AP] TRAP: Signal Failure! Trains are breaking down!");
-	} else if (item.item_name == "Fuel Shortage") {
-		/* Set a 60-second slowdown counter (240 ticks × 250 ms).
-		 * The realtime timer applies the speed cap every 5 s while active. */
-		_ap_fuel_shortage_ticks = 240;
-		for (Vehicle *v : Vehicle::Iterate()) {
-			if (v->owner == cid && v->IsPrimaryVehicle())
-				v->cur_speed = v->cur_speed / 2;
-		}
-		AP_ShowNews("[AP] TRAP: Fuel Shortage! Vehicles running at half speed for 60 seconds!");
-	} else if (item.item_name == "Industry Closure") {
-		/* Find industries actively serviced by the player (same logic as Death Link).
-		 * Falls back to a random industry if none are connected yet. */
-		std::vector<Industry *> active_industries;
-		for (Station *st : Station::Iterate()) {
-			if (st->owner != cid) continue;
-			for (Industry *ind : Industry::Iterate()) {
-				if (ind->location.tile == INVALID_TILE) continue;
-				bool already = false;
-				for (Industry *ai : active_industries) { if (ai == ind) { already = true; break; } }
-				if (already) continue;
-				for (const auto &produced : ind->produced) {
-					if (!IsValidCargoType(produced.cargo) || produced.cargo >= NUM_CARGO) continue;
-					if (st->goods[produced.cargo].HasRating()) {
-						active_industries.push_back(ind);
-						break;
-					}
-				}
-			}
-		}
-
-		Industry *victim = nullptr;
-		if (!active_industries.empty()) {
-			victim = active_industries[RandomRange((uint32_t)active_industries.size())];
-		} else {
-			/* Fallback: any random industry */
-			int count = 0;
-			for ([[maybe_unused]] Industry *ind : Industry::Iterate()) { count++; }
-			if (count > 0) {
-				int target_i = RandomRange(count), i = 0;
-				for (Industry *ind : Industry::Iterate()) {
-					if (i++ == target_i) { victim = ind; break; }
-				}
-			}
-		}
-
-		if (victim != nullptr) {
-			for (auto &produced : victim->produced) {
-				produced.history[THIS_MONTH].production = 0;
-			}
-			victim->prod_level = 0;
-			const Town *t = victim->town;
-			std::string loc = (t != nullptr) ? std::string(" near ") + t->name : "";
-			AP_ShowNews(fmt::format("[AP] TRAP: Industry Closure! An industry{} has shut down!", loc));
-		} else {
-			AP_ShowNews("[AP] TRAP: Industry Closure! (no industry found)");
-		}
-
-	/* ── UTILITY ITEMS ─────────────────────────────────── */
-	} else if (item.item_name == "Cash Injection £50,000") {
-		c->money += (Money)50000LL;
-		AP_ShowNews("[AP] Bonus: +£50,000!");
-	} else if (item.item_name == "Cash Injection £200,000") {
-		c->money += (Money)200000LL;
-		AP_ShowNews("[AP] Bonus: +£200,000!");
-	} else if (item.item_name == "Cash Injection £500,000") {
-		c->money += (Money)500000LL;
-		AP_ShowNews("[AP] Bonus: +£500,000!");
-	} else if (item.item_name == "Loan Reduction £100,000") {
-		Money reduce = (Money)100000LL;
-		c->current_loan = (c->current_loan > reduce) ? Money(c->current_loan - reduce) : Money(0);
-		AP_ShowNews("[AP] Bonus: Loan reduced by £100,000!");
-	} else if (item.item_name == "Reliability Boost (all vehicles, 90 days)") {
-		/* Start a 90-game-day reliability timer (90 days * ~80 ticks/day ≈ 7200 ticks).
-		 * The per-tick handler re-applies max reliability every tick, countering the
-		 * normal reliability_spd_dec decay that CheckVehicleBreakdown applies. */
-		_ap_reliability_boost_ticks = 7200;
-		for (Vehicle *v : Vehicle::Iterate()) {
-			if (v->owner == cid && v->IsPrimaryVehicle()) {
-				const Engine *e = v->GetEngine();
-				if (e != nullptr) v->reliability = e->reliability_max;
-				v->breakdown_chance = 0;
-			}
-		}
-		AP_ShowNews("[AP] Bonus: Reliability Boost! All vehicles at max reliability for 90 days.");
-	} else if (item.item_name == "Cargo Bonus (2x payment, 60 days)") {
-		/* Start a 60-second (240-tick) cargo payment multiplier.
-		 * The hook in DeliverGoods (economy.cpp) doubles profit while this is active. */
-		_ap_cargo_bonus_ticks = 240;
-		AP_ShowNews("[AP] Bonus: Cargo Bonus! All cargo deliveries pay double for 60 seconds!");
-	} else if (item.item_name == "Town Growth Boost") {
-		/* Trigger an immediate growth pulse in every town by resetting
-		 * grow_counter to 0.  The engine will schedule the next growth
-		 * tick immediately.  We deliberately do NOT halve growth_rate —
-		 * that mutation is permanent and, with 8+ copies in the pool,
-		 * would eventually freeze all towns. */
-		for (Town *t : Town::Iterate()) {
-			t->grow_counter = 0;
-		}
-		AP_ShowNews("[AP] Bonus: Town Growth Boost! All towns growing faster.");
-	} else if (item.item_name == "Free Station Upgrade") {
-		/* Boost all player stations to MAX_STATION_RATING (255) for 30 game-days.
-		 * The per-day timer re-applies the boost so normal decay doesn't reduce it. */
-		_ap_station_boost_ticks = 2400; /* 30 days * ~80 ticks/day */
-		for (Station *st : Station::Iterate()) {
-			if (st->owner != cid) continue;
-			for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
-				if (st->goods[ct].HasRating()) {
-					st->goods[ct].rating = MAX_STATION_RATING;
-				}
-			}
-		}
-		AP_ShowNews("[AP] Bonus: Free Station Upgrade! All your stations boosted to perfect rating for 30 days!");
-	} else if (item.item_name == "Cash Bonus" || item.item_name == "Extra Funding") {
-		/* Legacy names */
-		c->money += (Money)100000LL;
-		AP_ShowNews("[AP] Bonus: +£100,000!");
-	} else {
-		AP_WARN("Unknown item: '" + item.item_name + "' — not handled");
+		if (!is_replay) AP_ShowNews("Cargo type unlocked: " + item.item_name);
+		SetWindowClassesDirty(WC_ARCHIPELAGO);
+		_ap_status_dirty.store(true);
+		return;
 	}
+
+	/* -- Filler items --------------------------------------------- */
+	if (item.item_name == "50,000 $") {
+		if (!is_replay) {
+			CompanyID fid = _local_company;
+			Company *fc = Company::GetIfValid(fid);
+			if (fc != nullptr) fc->money += (Money)50000LL;
+			AP_ShowNews("Bonus: +$50,000!");
+		}
+		return;
+	}
+	if (item.item_name == "Choo chooo!") {
+		if (!is_replay) AP_ShowNews("Choo chooo!");
+		return;
+	}
+
+	/* Unknown item */
+	AP_WARN("Unknown item: '" + item.item_name + "' — not handled");
 }
 
 static void AP_OnConnected()
@@ -1069,6 +746,7 @@ static void AP_OnDisconnected(const std::string &reason)
 	_ap_world_started_this_session = false;
 	_ap_pending_world_start = false;
 	_ap_session_started = false;
+	_ap_unlocked_cargo_types.fill(false);
 	AP_LOG("Session flags reset — next connect can start world");
 	_ap_status_dirty.store(true);
 }
@@ -1076,7 +754,7 @@ static void AP_OnDisconnected(const std::string &reason)
 static void AP_OnPrint(const std::string &msg)
 {
 	Debug(misc, 0, "[AP] Server: {}", msg);
-	AP_ShowNews("[AP] " + msg);
+	AP_ShowNews(msg);
 }
 
 /* -------------------------------------------------------------------------
@@ -1114,59 +792,35 @@ static void AP_OnDeathReceived(const std::string &source)
 
 	CompanyID cid = _local_company;
 
-	/* Step 1 — Build a list of industries actively serviced by the player.
-	 * An industry is "active" if at least one of the player's stations has a
-	 * GoodsEntry rating for a cargo that this industry produces. */
-	std::vector<Industry *> active_industries;
-
-	for (Station *st : Station::Iterate()) {
-		if (st->owner != cid) continue;
-		for (Industry *ind : Industry::Iterate()) {
-			/* Check if industry is within station catchment area */
-			if (ind->location.tile == INVALID_TILE) continue;
-			bool already_added = false;
-			for (Industry *ai : active_industries) { if (ai == ind) { already_added = true; break; } }
-			if (already_added) continue;
-
-			/* Check if any cargo from this industry has a rating at this station */
-			for (const auto &produced : ind->produced) {
-				if (!IsValidCargoType(produced.cargo)) continue;
-				if (produced.cargo >= NUM_CARGO) continue;
-				const GoodsEntry &ge = st->goods[produced.cargo];
-				if (ge.HasRating()) {
-					active_industries.push_back(ind);
-					break;
-				}
-			}
-		}
+	/* Build a list of active (non-crashed, not in depot) primary vehicles owned by the player. */
+	std::vector<Vehicle *> candidates;
+	for (Vehicle *v : Vehicle::Iterate()) {
+		if (v->owner != cid) continue;
+		if (!v->IsPrimaryVehicle()) continue;
+		if (v->vehstatus.Test(VehState::Crashed)) continue;
+		if (v->IsChainInDepot()) continue;
+		candidates.push_back(v);
 	}
 
-	if (!active_industries.empty()) {
-		/* Step 2 — Pick a random active industry and halt it */
-		size_t idx = RandomRange((uint32_t)active_industries.size());
-		Industry *victim = active_industries[idx];
-
-		/* Zero out production on all outputs */
-		for (auto &produced : victim->produced) {
-			produced.history[THIS_MONTH].production = 0;
-		}
-		victim->prod_level = 0;
-
-		/* Find the town name for the news message */
-		const Town *t = victim->town;
-		std::string town_name = (t != nullptr) ? "near " + std::string(t->name) : "";
-		/* Large newspaper-style news for death events so player can't miss it */
+	if (!candidates.empty()) {
+		/* Pick a random vehicle and crash it. Virtual dispatch handles
+		 * type-specific logic (track reservation clearing, animations, etc.) */
+		Vehicle *victim = candidates[RandomRange((uint32_t)candidates.size())];
+		std::string veh_name = victim->name.empty()
+			? fmt::format("Vehicle #{}", victim->index.base())
+			: std::string(victim->name);
+		victim->Crash();
 		AddNewsItem(
 			GetEncodedString(STR_ARCHIPELAGO_NEWS,
-			    fmt::format("DEATH LINK from {}! {} industry shut down!", source, town_name)),
+			    fmt::format("DEATH LINK from {}! {} was destroyed!", source, veh_name)),
 			NewsType::General,
 			NewsStyle::Normal,
 			{}
 		);
-		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! Industry closure {}!", source, town_name));
-		Debug(misc, 0, "[AP] Death received from {} — shut down industry {}", source, victim->index.base());
+		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! {} destroyed!", source, veh_name));
+		Debug(misc, 0, "[AP] Death received from {} — crashed vehicle {}", source, victim->index.base());
 	} else {
-		/* Fallback: no active industries yet — take a money penalty */
+		/* Fallback: no active vehicles — take a money penalty */
 		Company *c = Company::GetIfValid(cid);
 		if (c != nullptr) {
 			c->money -= (Money)std::max((int64_t)50000LL, (int64_t)(c->money / 10));
@@ -1179,7 +833,7 @@ static void AP_OnDeathReceived(const std::string &source)
 			{}
 		);
 		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! Emergency costs drained your funds!", source));
-		Debug(misc, 0, "[AP] Death received from {} — no active industries, money penalty applied", source);
+		Debug(misc, 0, "[AP] Death received from {} — no active vehicles, money penalty applied", source);
 	}
 }
 
@@ -1206,47 +860,17 @@ void EnsureHandlersRegistered()
  * Win-condition check
  * ---------------------------------------------------------------------- */
 
-static bool CheckWinCondition(const APSlotData &sd)
+static bool CheckWinCondition()
 {
-	CompanyID cid = _local_company;
-	if (cid >= MAX_COMPANIES) return false;
-	const Company *c = Company::GetIfValid(cid);
-	if (c == nullptr) return false;
-
-	int64_t current = 0;
-	switch (sd.win_condition) {
-		case APWinCondition::COMPANY_VALUE:
-			current = (int64_t)c->old_economy[0].company_value;
-			break;
-		case APWinCondition::MONTHLY_PROFIT:
-			current = (int64_t)c->old_economy[0].income - (int64_t)c->old_economy[0].expenses;
-			break;
-		case APWinCondition::VEHICLE_COUNT: {
-			int count = 0;
-			for (const Vehicle *v : Vehicle::Iterate())
-				if (v->owner == cid && v->IsPrimaryVehicle()) count++;
-			current = count;
-			break;
-		}
-		case APWinCondition::TOWN_POPULATION:
-			/* Sum population of all towns on the map */
-			current = (int64_t)GetWorldPopulation();
-			break;
-		case APWinCondition::CARGO_DELIVERED: {
-			/* Sum all cumulative cargo delivered across all types this session.
-			 * Uses the same accumulator as mission evaluation — NOT old_economy[0]
-			 * which only covers one quarter. */
-			uint64_t total = 0;
-			for (uint i = 0; i < NUM_CARGO; i++)
-				total += AP_GetTotalCargo((CargoType)i);
-			current = (int64_t)total;
-			break;
-		}
-		default:
-			current = (int64_t)c->old_economy[0].company_value;
-			break;
+	/* Current apworld win condition: collect all 11 cargo type items. */
+	static constexpr const char *CARGO_WIN_ITEMS[] = {
+		"Passengers", "Mail", "Coal", "Oil", "Livestock", "Goods",
+		"Grain", "Wood", "Iron Ore", "Steel", "Valuables"
+	};
+	for (const char *cargo : CARGO_WIN_ITEMS) {
+		if (!_ap_received_item_counts.count(cargo)) return false;
 	}
-	return current >= sd.win_condition_value;
+	return true;
 }
 
 /* -------------------------------------------------------------------------
@@ -1278,120 +902,47 @@ void AP_ConsumeWorldStart()
 		_settings_newgame.game_creation.landscape = (LandscapeType)sd.landscape;
 	if (sd.land_generator <= 1)
 		_settings_newgame.game_creation.land_generator = sd.land_generator;
+	if (sd.terrain_type <= 5)
+		_settings_newgame.difficulty.terrain_type = sd.terrain_type;
+	if (sd.quantity_sea_lakes <= 4)
+		_settings_newgame.difficulty.quantity_sea_lakes = sd.quantity_sea_lakes;
+	if (sd.variety <= 5)
+		_settings_newgame.game_creation.variety = sd.variety;
+	if (sd.tgen_smoothness <= 3)
+		_settings_newgame.game_creation.tgen_smoothness = sd.tgen_smoothness;
+	if (sd.amount_of_rivers <= 3)
+		_settings_newgame.game_creation.amount_of_rivers = sd.amount_of_rivers;
+	if (sd.town_name <= 255)
+		_settings_newgame.game_creation.town_name = sd.town_name;
+	if (sd.number_towns <= 4)
+		_settings_newgame.difficulty.number_towns = sd.number_towns;
+
+	if (sd.water_border_presets <= 2) {
+		switch (sd.water_border_presets) {
+			case 0: // Random
+				_settings_newgame.game_creation.water_borders = BorderFlag::Random;
+				_settings_newgame.construction.freeform_edges = true;
+				break;
+			case 1: // Manual
+				_settings_newgame.game_creation.water_borders = {};
+				_settings_newgame.construction.freeform_edges = true;
+				break;
+			case 2: // Infinite water
+				_settings_newgame.game_creation.water_borders = BORDERFLAGS_ALL;
+				_settings_newgame.construction.freeform_edges = false;
+				break;
+		}
+		_settings_newgame.game_creation.water_border_presets = static_cast<BorderFlagPresets>(sd.water_border_presets);
+	}
 
 	_ap_world_seed_to_use = (sd.world_seed != 0) ? sd.world_seed : GENERATE_NEW_SEED;
 
-	/* ── Accounting ───────────────────────────────────────────────── */
-	_settings_newgame.difficulty.infinite_money        = sd.infinite_money;
-	_settings_newgame.economy.inflation                = sd.inflation;
-	_settings_newgame.difficulty.max_loan              = sd.max_loan;
-	_settings_newgame.economy.infrastructure_maintenance = sd.infrastructure_maintenance;
-	_settings_newgame.difficulty.vehicle_costs         = sd.vehicle_costs;
-	_settings_newgame.difficulty.construction_cost     = sd.construction_cost;
-
-	/* ── Vehicle Limitations ─────────────────────────────────────── */
-	_settings_newgame.vehicle.max_trains               = sd.max_trains;
-	_settings_newgame.vehicle.max_roadveh              = sd.max_roadveh;
-	_settings_newgame.vehicle.max_aircraft             = sd.max_aircraft;
-	_settings_newgame.vehicle.max_ships                = sd.max_ships;
-	/* max_train_length and station_spread: settings_type.h uses vanilla uint8_t.
-	 * AP slot_data may send up to uint16_t — clamp to 255. */
-	_settings_newgame.vehicle.max_train_length = (uint8_t)std::min((uint16_t)255, sd.max_train_length);
-	_settings_newgame.station.station_spread   = (uint8_t)std::min((uint16_t)255, sd.station_spread);
-	_settings_newgame.construction.road_stop_on_town_road       = sd.road_stop_on_town_road;
-	_settings_newgame.construction.road_stop_on_competitor_road = sd.road_stop_on_competitor_road;
-	_settings_newgame.construction.crossing_with_competitor     = sd.crossing_with_competitor;
-
-	/* ── Disasters / Accidents ───────────────────────────────────── */
-	_settings_newgame.difficulty.disasters             = sd.disasters;
-	_settings_newgame.vehicle.plane_crashes            = sd.plane_crashes;
-	_settings_newgame.difficulty.vehicle_breakdowns    = sd.vehicle_breakdowns;
-
-	/* ── Economy / Environment ───────────────────────────────────── */
-	_settings_newgame.economy.type                     = (EconomyType)sd.economy_type;
-	_settings_newgame.economy.bribe                    = sd.bribe;
-	_settings_newgame.economy.exclusive_rights         = sd.exclusive_rights;
-	_settings_newgame.economy.fund_buildings           = sd.fund_buildings;
-	_settings_newgame.economy.fund_roads               = sd.fund_roads;
-	_settings_newgame.economy.give_money               = sd.give_money;
-	_settings_newgame.economy.town_growth_rate         = sd.town_growth_rate;
-	_settings_newgame.economy.found_town               = (TownFounding)sd.found_town;
-	_settings_newgame.economy.town_cargo_scale         = sd.town_cargo_scale;
-	_settings_newgame.economy.industry_cargo_scale     = sd.industry_cargo_scale;
 	_settings_newgame.difficulty.industry_density      = sd.industry_density;
-	_settings_newgame.economy.allow_town_roads         = sd.allow_town_roads;
 
-	/* ── Vehicles / Routing ──────────────────────────────────────── */
-	_settings_newgame.vehicle.road_side                = sd.road_side;
-
-	/* ── NewGRF: Iron Horse ──────────────────────────────────────────── */
-	if (sd.enable_iron_horse) {
-		/* iron_horse.grf is bundled in the {exe}/newgrf/ subfolder of the
-		 * Archipelago patch release zip.  OpenTTD searches SP_BINARY_DIR
-		 * last in its NewGRF scan, so if the user has not yet done a
-		 * ScanNewGRFFiles() that picked it up, we copy it into the personal
-		 * newgrf directory first so FillGRFDetails can find it. */
-
-		static const std::string IH_FILENAME = "iron_horse.grf";
-
-		/* 1) Does the file already exist anywhere OpenTTD would find it? */
-		auto ih = std::make_unique<GRFConfig>(IH_FILENAME);
-		ih->SetSuitablePalette();
-
-		if (!FillGRFDetails(*ih, false, NEWGRF_DIR)) {
-			/* Not found — try to copy from our bundle (next to the exe) */
-			std::string src = FioGetDirectory(SP_BINARY_DIR, NEWGRF_DIR) + IH_FILENAME;
-			std::string dst = FioGetDirectory(SP_PERSONAL_DIR, NEWGRF_DIR) + IH_FILENAME;
-
-			bool copied = false;
-			{
-				/* std::filesystem is banned by safeguards — use fopen/fwrite */
-				FILE *fsrc = fopen(src.c_str(), "rb");
-				if (fsrc != nullptr) {
-					FILE *fdst = fopen(dst.c_str(), "wb");
-					if (fdst != nullptr) {
-						char buf[65536];
-						size_t n;
-						while ((n = fread(buf, 1, sizeof(buf), fsrc)) > 0) {
-							fwrite(buf, 1, n, fdst);
-						}
-						fclose(fdst);
-						copied = true;
-					}
-					fclose(fsrc);
-				}
-			}
-
-			if (copied) {
-				AP_OK(fmt::format("Iron Horse GRF installed from bundle to: {}", dst));
-				/* Re-try FillGRFDetails now that the file is in place */
-				ih = std::make_unique<GRFConfig>(IH_FILENAME);
-				ih->SetSuitablePalette();
-				if (!FillGRFDetails(*ih, false, NEWGRF_DIR)) {
-					/* Rescan so OpenTTD finds the newly copied file */
-					ScanNewGRFFiles(nullptr);
-					ih = std::make_unique<GRFConfig>(IH_FILENAME);
-					ih->SetSuitablePalette();
-					FillGRFDetails(*ih, false, NEWGRF_DIR);
-				}
-			} else {
-				AP_WARN(fmt::format(
-					"iron_horse.grf not found in bundle ({}) — "
-					"place it in your newgrf/ folder or re-download the patch zip.",
-					src));
-			}
-		}
-
-		/* 2) If the GRF is now resolved, add it to the new-game config */
-		if (ih->status != GCS_NOT_FOUND && ih->status != GCS_DISABLED) {
-			AppendToGRFConfigList(_grfconfig_newgame, std::move(ih));
-			AP_OK("Iron Horse GRF activated for new game.");
-		}
-	}
-
-	Debug(misc, 0, "[AP] World start ready: seed={}, year={}, map={}x{}, landscape={}",
+	Debug(misc, 0, "[AP] World start ready: seed={}, year={}, map={}x{}, landscape={} terrain={} sea={} towns={}",
 	      _ap_world_seed_to_use, sd.start_year,
-	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape);
+	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape,
+	      (int)sd.terrain_type, (int)sd.quantity_sea_lakes, (int)sd.number_towns);
 	Debug(misc, 0, "[AP] Game settings: loans={} trains={} roadveh={} train_len={} station_spread={}",
 	      sd.max_loan, sd.max_trains, sd.max_roadveh,
 	      sd.max_train_length, sd.station_spread);
@@ -1406,7 +957,7 @@ uint32_t AP_GetWorldSeed()
 }
 
 /* -------------------------------------------------------------------------
- * Shop and location check API
+ * Item and location check API
  * ---------------------------------------------------------------------- */
 
 void AP_ShowConsole(const std::string &msg)
@@ -1417,100 +968,10 @@ void AP_ShowConsole(const std::string &msg)
 void AP_SendCheckByName(const std::string &location_name)
 {
 	if (_ap_client == nullptr) return;
-	/* Track shop purchases so RebuildShopList can filter already-bought slots */
-	if (location_name.rfind("Shop_Purchase_", 0) == 0) {
-		_ap_sent_shop_locations.insert(location_name);
-	}
 	_ap_client->SendCheckByName(location_name);
 }
 
-int AP_GetShopSlots()
-{
-	/* Returns the total number of shop purchase locations for this game. */
-	const APSlotData &sd = AP_GetSlotData();
-	return sd.shop_slots > 0 ? sd.shop_slots : 100;
-}
 
-int AP_GetShopRefreshDays()
-{
-	return AP_GetSlotData().shop_refresh_days;
-}
-
-std::string AP_GetShopLocationLabel(const std::string &location_name)
-{
-	/* First: check slot_data for the actual item name at this location */
-	const APSlotData &sd = AP_GetSlotData();
-	auto it = sd.shop_item_names.find(location_name);
-	if (it != sd.shop_item_names.end() && !it->second.empty())
-		return it->second;
-
-	/* Fallback: LocationScouts hint (returns "player (game)" for multi-world) */
-	if (_ap_client != nullptr) {
-		std::string hint = _ap_client->GetLocationHint(location_name);
-		if (!hint.empty()) return hint;
-	}
-	/* Last resort: extract slot number and show "Slot #N" instead of raw ID */
-	const std::string prefix = "Shop_Purchase_";
-	if (location_name.rfind(prefix, 0) == 0) {
-		std::string num = location_name.substr(prefix.size());
-		/* Strip leading zeros */
-		size_t first_nonzero = num.find_first_not_of('0');
-		if (first_nonzero != std::string::npos) num = num.substr(first_nonzero);
-		return "Shop Slot #" + num;
-	}
-	return location_name;
-}
-
-int64_t AP_GetShopPrice(const std::string &location_name)
-{
-	const APSlotData &sd = AP_GetSlotData();
-	auto it = sd.shop_prices.find(location_name);
-	if (it != sd.shop_prices.end()) return it->second;
-	return 50000LL; /* Fallback £50k if no price defined */
-}
-
-bool AP_CanAffordShopItem(const std::string &location_name)
-{
-	CompanyID cid = _local_company;
-	const Company *c = Company::GetIfValid(cid);
-	if (c == nullptr) return false;
-	return (int64_t)c->money >= AP_GetShopPrice(location_name);
-}
-
-bool AP_IsShopLocationSent(const std::string &location_name)
-{
-	return _ap_sent_shop_locations.count(location_name) > 0;
-}
-
-std::string AP_GetSentShopStr()
-{
-	std::string out;
-	for (const std::string &loc : _ap_sent_shop_locations) {
-		if (!out.empty()) out += ',';
-		out += loc;
-	}
-	return out;
-}
-
-void AP_SetSentShopStr(const std::string &s)
-{
-	if (s.empty()) return;
-	std::string token;
-	for (char c : s) {
-		if (c == ',') { if (!token.empty()) _ap_sent_shop_locations.insert(token); token.clear(); }
-		else token += c;
-	}
-	if (!token.empty()) _ap_sent_shop_locations.insert(token);
-}
-
-void AP_DeductShopPrice(const std::string &location_name)
-{
-	CompanyID cid = _local_company;
-	Company *c = Company::GetIfValid(cid);
-	if (c == nullptr) return;
-	int64_t price = AP_GetShopPrice(location_name);
-	c->money -= (Money)price;
-}
 
 /* -------------------------------------------------------------------------
  * REAL-TIME TIMER — 250ms
@@ -1531,38 +992,15 @@ void AP_DeductShopPrice(const std::string &location_name)
  * ---------------------------------------------------------------------- */
 
 static uint32_t _ap_realtime_ticks = 0;
+static constexpr uint32_t AP_RT_TICK_MS            = 250;
+static constexpr uint32_t AP_MISSION_CHECK_TICKS   = 4;   /* 1 second */
+static constexpr uint32_t AP_STATS_AND_LOCK_TICKS  = 40;  /* 10 seconds */
+static constexpr uint32_t AP_WIN_CHECK_TICKS       = 40;  /* 10 seconds */
 
-/* -------------------------------------------------------------------------
- * Shop page offset / day counter — kept for savegame compatibility only.
- * Shop rotation has been removed; the full shop list is always visible.
- * ---------------------------------------------------------------------- */
-
-static int _ap_shop_day_counter  = 0;   ///< Unused — kept for savegame compat
-static int _ap_shop_page_offset  = 0;   ///< Unused — kept for savegame compat
-
-/* ── Savegame accessor functions (used by archipelago_sl.cpp) ────── */
-int  AP_GetShopPageOffset()  { return _ap_shop_page_offset; }
-void AP_SetShopPageOffset(int v) { _ap_shop_page_offset = v; }
-int  AP_GetShopDayCounter()  { return _ap_shop_day_counter; }
-void AP_SetShopDayCounter(int v) { _ap_shop_day_counter = v; }
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
 void AP_SetGoalSent(bool v)  { _ap_goal_sent = v; }
 
-void AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station)
-{
-	*fuel        = _ap_fuel_shortage_ticks;
-	*cargo       = _ap_cargo_bonus_ticks;
-	*reliability = _ap_reliability_boost_ticks;
-	*station     = _ap_station_boost_ticks;
-}
 
-void AP_SetEffectTimers(int fuel, int cargo, int reliability, int station)
-{
-	_ap_fuel_shortage_ticks      = fuel;
-	_ap_cargo_bonus_ticks        = cargo;
-	_ap_reliability_boost_ticks  = reliability;
-	_ap_station_boost_ticks      = station;
-}
 
 std::string AP_GetCompletedMissionsStr()
 {
@@ -1956,61 +1394,11 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 	{ TimerGameCalendar::MONTH, TimerGameCalendar::Priority::NONE },
 	[](auto) {
 		if (!_ap_session_started) return;
-
-		/* Named-destination: accumulate town/industry progress */
-		AP_UpdateNamedMissions();
-
-		CompanyID cid = _local_company;
-
-		for (APMission &m : _ap_pending_sd.missions) {
-			if (m.completed) continue;
-			/* Accept both normalized type (maintain_75) and legacy raw strings */
-			bool is_maintain = (m.type == "maintain_75" ||
-			                    m.type.find("maintain") != std::string::npos);
-			if (!is_maintain) continue;
-
-			/* Threshold: 191/255 ≈ 75% */
-			uint8_t threshold = 191;
-
-			/* Check every rated station — ALL must pass */
-			int rated_count = 0;
-			for (const Station *st : Station::Iterate()) {
-				if (st->owner != cid) continue;
-				for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
-					if (!st->goods[ct].HasRating()) continue;
-					rated_count++;
-					if (st->goods[ct].rating < threshold) {
-						/* This station failed — reset counter and absorb next fire */
-						m.maintain_months_ok = 0;
-						m.maintain_first_month_pending = true;
-						goto next_mission;
-					}
-				}
-			}
-			/* Only count progress if player actually has rated stations.
-			 * Guard: skip the very first timer fire after a station first
-			 * gets a rating — the station may have been rated only moments
-			 * before the month boundary, which would give a free increment.
-			 * We use a per-mission flag to absorb exactly one "first fire". */
-			if (rated_count > 0) {
-				if (m.maintain_first_month_pending) {
-					/* Absorb this fire — station was new this month */
-					m.maintain_first_month_pending = false;
-				} else {
-					m.maintain_months_ok++;
-					Debug(misc, 1, "[AP] Maintain mission '{}': {}/{} months OK",
-					      m.location, m.maintain_months_ok, m.amount);
-				}
-			}
-			next_mission:;
-		}
-		/* Refresh mission window so maintain progress is visible immediately */
-		SetWindowClassesDirty(WC_ARCHIPELAGO);
 	}
 );
 
-/* Shop rotation removed — the full shop list is always visible.
- * _ap_calendar_shop_refresh timer is no longer needed. */
+/* Legacy item rotation removed.
+ * No periodic item-list refresh timer is needed anymore. */
 
 /* -------------------------------------------------------------------------
  * Mission evaluation — calls EvaluateMission() for all incomplete missions
@@ -2035,7 +1423,7 @@ static void CheckMissions()
 			m.completed = true;
 			completed_this_pass++;
 			AP_SendCheckByName(m.location);
-			AP_ShowNews("[AP] Mission complete: " + m.description);
+			AP_ShowNews("Mission complete: " + m.description);
 			Debug(misc, 0, "[AP] Mission completed: {} ({})", m.location, m.description);
 		}
 	}
@@ -2046,11 +1434,7 @@ static void CheckMissions()
 	}
 }
 
-/** Called by the shop window when the player completes a purchase. */
-void AP_NotifyShopPurchased()
-{
-	_ap_shop_purchased = true;
-}
+
 
 static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 	{ std::chrono::milliseconds(250), TimerGameRealtime::ALWAYS },
@@ -2061,24 +1445,18 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		/* Dispatch inbound AP events */
 		_ap_client->Tick();
 
-		/* Deferred named-entity name resolution: AP_SetNamedEntityStr skips
-		 * GetString calls during chunk Load (ind->town is null then).
-		 * AfterLoadGame() resolves all pointers before the first game tick,
-		 * so it is safe to call GetString here. Runs regardless of AP state. */
-		if (_ap_named_entity_refresh_needed &&
-		    _game_mode == GM_NORMAL &&
-		    _local_company < MAX_COMPANIES) {
-			AP_RefreshNamedEntityNames();
-			_ap_status_dirty.store(true);
-		}
-
 		/* First-tick session setup when we enter GM_NORMAL */
 		if (!_ap_session_started &&
 		    _game_mode == GM_NORMAL &&
 		    _local_company < MAX_COMPANIES &&
 		    _ap_client->GetState() == APState::AUTHENTICATED) {
 
+			const bool is_reconnect = (_ap_client->GetReceivedItemsIndex() > 0);
+
 			_ap_session_started = true;
+			_ap_received_item_counts.clear();  /* reset for fresh item tracking this session */
+			_ap_unlocked_tier_counts.clear();  /* reset tier progress — items will replay and re-unlock */
+			_ap_unlocked_cargo_types.fill(false);
 
 			CompanyID cid = _local_company;
 			Company *c = Company::GetIfValid(cid);
@@ -2104,11 +1482,9 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Reset session statistics for mission evaluation */
 			AP_InitSessionStats();
 
-				/* Assign named map entities to named-destination missions */
-				AP_AssignNamedEntities();
-				/* Refresh names for missions restored from savegame (deferred from Load()) */
-				if (_ap_named_entity_refresh_needed) AP_RefreshNamedEntityNames();
-				_ap_status_dirty.store(true); /* refresh GUI to show resolved [Town]/[Industry] names */
+			if (_ap_pending_sd.missions.empty()) {
+				AP_WARN("No missions in slot_data; mission checks will remain disabled.");
+			}
 
 			/* AP settings: vehicle/airport expiry already disabled above (before
 			 * BuildEngineMap).  No additional setting needed here. */
@@ -2118,39 +1494,18 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			 * WAGONS are excluded — they are always freely available so the
 			 * player can use any locomotive they receive from AP.
 			 *
-			 * SELECTIVE LOCKING: if the APWorld sent a locked_vehicles list,
-			 * only lock engines whose English name is in that list.  Engines
-			 * NOT in the list (e.g. Iron Horse engines when enable_iron_horse=false)
-			 * remain available so the player can use them freely.
-			 * Legacy fallback: if no locked_vehicles list, lock everything (old behaviour). */
+			 * All non-wagon engines are locked at session start; AP items unlock them progressively. */
 			_ap_unlocked_engine_ids.clear();
 
-			const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
-			static const std::string ih_prefix = "IH: ";
 			int locked_count = 0;
 			for (Engine *e : Engine::Iterate()) {
 				if (!e->company_avail.Test(cid)) { continue; }
-				bool is_wagon = (e->type == VEH_TRAIN &&
-				                 e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
+				bool is_wagon = (e->type == VEH_TRAIN && e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
 				if (is_wagon) { continue; }
-				if (has_lock_list) {
-					std::string eng_name = GetString(STR_ENGINE_NAME,
-						PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
-					if (eng_name.empty()) eng_name = GetString(e->info.string_id);
-					/* Iron Horse engines are stored in locked_vehicles with "IH: " prefix
-					 * (matching items.py), but GetString returns the plain name (e.g.
-					 * "4-4-2 Lark").  Try both: plain name first, then prefixed. */
-					bool in_list = (_ap_pending_sd.locked_vehicles.count(eng_name) > 0) ||
-					               (_ap_pending_sd.locked_vehicles.count(ih_prefix + eng_name) > 0);
-					if (!in_list) {
-						continue;
-					}
-				}
 				e->company_avail.Reset(cid);
 				locked_count++;
 			}
-			Debug(misc, 1, "[AP] Session lock complete: {} engines locked (has_lock_list={})",
-			      locked_count, has_lock_list);
+			Debug(misc, 1, "[AP] Session lock complete: {} engines locked", locked_count);
 
 			/* Unlock ALL rail and road types unconditionally — ensures any
 			 * AP-randomised engine's track/road type is always buildable. */
@@ -2192,7 +1547,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				if (!_ap_engine_map_built) BuildEngineMap();
 				if (AP_UnlockEngineByName(sv)) {
 					AP_OK("Starting vehicle unlocked: " + sv);
-					AP_ShowNews("[AP] Starting vehicle: " + sv);
+					if (!is_reconnect) AP_ShowNews("Starting vehicle: " + sv);
 				} else {
 					/* Engine not found — try rebuilding the map once (covers edge
 					 * cases where the map was built before all NewGRFs finished
@@ -2202,7 +1557,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 					BuildEngineMap();
 					if (AP_UnlockEngineByName(sv)) {
 						AP_OK("Starting vehicle unlocked after map rebuild: " + sv);
-						AP_ShowNews("[AP] Starting vehicle: " + sv);
+						if (!is_reconnect) AP_ShowNews("Starting vehicle: " + sv);
 					} else {
 						AP_ERR("Starting vehicle '" + sv + "' not found in engine map!");
 					}
@@ -2210,16 +1565,16 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			}
 
 			/* Apply starting cash bonus if configured */
-			if (_ap_pending_sd.starting_cash_bonus > 0 && c != nullptr) {
+			if (_ap_pending_sd.starting_cash_bonus > 0 && c != nullptr && !is_reconnect) {
 				static const Money bonus_amounts[] = {
 					0, 50000LL, 200000LL, 500000LL, 2000000LL
 				};
 				int tier = std::clamp(_ap_pending_sd.starting_cash_bonus, 0, 4);
 				if (tier > 0) {
 					c->money += bonus_amounts[tier];
-					AP_ShowNews(fmt::format("[AP] Starting bonus: \xc2\xa3{} added to your account!",
+					AP_ShowNews(fmt::format("Starting bonus: \xc2\xa3{} added to your account!",
 					    (long long)bonus_amounts[tier]));
-					AP_OK(fmt::format("[AP] Starting cash bonus tier {} = +\xc2\xa3{}",
+					AP_OK(fmt::format("Starting cash bonus tier {} = +\xc2\xa3{}",
 					    tier, (long long)bonus_amounts[tier]));
 				}
 			}
@@ -2235,71 +1590,22 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			      _ap_engine_map.size()));
 		}
 
-		/* Every ~5 s (20 × 250 ms): update economy stats and check missions.
-		 * Every ~10 s (40 × 250 ms): also check win condition. */
+		/* Mission checks run every ~1 s for snappier AP completion feedback.
+		 * Heavier maintenance (engine re-lock + economy stat accumulation)
+		 * remains every ~5 s. Win condition remains every ~10 s. */
 		_ap_realtime_ticks++;
 
 		/* Tick down cooldowns every 250 ms */
 		if (_ap_death_cooldown_ticks > 0) _ap_death_cooldown_ticks--;
 
-		/* Timed effects only count down and apply while actually playing.
-		 * Paused game or being in a menu must not drain effect duration. */
-		if (_game_mode == GM_NORMAL) {
-			/* Fuel Shortage: re-apply speed cap every tick while active */
-			if (_ap_fuel_shortage_ticks > 0) {
-				_ap_fuel_shortage_ticks--;
-				if (_ap_session_started) {
-					CompanyID cid = _local_company;
-					for (Vehicle *v : Vehicle::Iterate()) {
-						if (v->owner == cid && v->IsPrimaryVehicle()) {
-							const Engine *e = v->GetEngine();
-							if (e != nullptr) {
-								uint16_t half_speed = e->GetDisplayMaxSpeed() / 2;
-								if (v->cur_speed > half_speed) v->cur_speed = half_speed;
-							}
-						}
-					}
-				}
-			}
-
-			/* Cargo Bonus: tick down 2x payment multiplier */
-			if (_ap_cargo_bonus_ticks > 0) _ap_cargo_bonus_ticks--;
-
-			/* Reliability Boost: re-apply max reliability every tick to counter decay */
-			if (_ap_reliability_boost_ticks > 0) {
-				_ap_reliability_boost_ticks--;
-				if (_ap_session_started) {
-					CompanyID cid = _local_company;
-					for (Vehicle *v : Vehicle::Iterate()) {
-						if (v->owner == cid && v->IsPrimaryVehicle()) {
-							const Engine *e = v->GetEngine();
-							if (e != nullptr) {
-								v->reliability = e->reliability_max;
-								v->breakdown_chance = 0;
-							}
-						}
-					}
-				}
-			}
-
-			/* Station Boost: re-apply MAX_STATION_RATING to all player stations */
-			if (_ap_station_boost_ticks > 0) {
-				_ap_station_boost_ticks--;
-				if (_ap_session_started) {
-					CompanyID cid = _local_company;
-					for (Station *st : Station::Iterate()) {
-						if (st->owner != cid) continue;
-						for (CargoType ct = 0; ct < NUM_CARGO; ct++) {
-							if (st->goods[ct].HasRating()) {
-								st->goods[ct].rating = MAX_STATION_RATING;
-							}
-						}
-					}
-				}
-			}
+		if (_ap_realtime_ticks % AP_MISSION_CHECK_TICKS == 0 &&
+		    _ap_session_started &&
+		    _game_mode == GM_NORMAL) {
+			/* Evaluate all incomplete missions frequently to reduce AP sync lag. */
+			CheckMissions();
 		}
 
-		if (_ap_realtime_ticks % 20 == 0 &&
+		if (_ap_realtime_ticks % AP_STATS_AND_LOCK_TICKS == 0 &&
 		    _ap_session_started &&
 		    _game_mode == GM_NORMAL) {
 
@@ -2312,12 +1618,11 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			CompanyID lock_cid = _local_company;
 			if (lock_cid < MAX_COMPANIES) {
 				const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
-				static const std::string ih_prefix = "IH: ";
 				bool need_invalidate = false;
 				for (Engine *e : Engine::Iterate()) {
 					/* Wagons always stay available */
 					if (e->type == VEH_TRAIN &&
-					    e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON) continue;
+						e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON) continue;
 
 					/* If AP has explicitly unlocked this engine this session, leave it alone */
 					if (_ap_unlocked_engine_ids.count(e->index) > 0) continue;
@@ -2325,11 +1630,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 						std::string eng_name = GetString(STR_ENGINE_NAME,
 							PackEngineNameDParam(e->index, EngineNameContext::PurchaseList));
 						if (eng_name.empty()) eng_name = GetString(e->info.string_id);
-						/* Iron Horse engines are stored in locked_vehicles with "IH: " prefix
-						 * (matching items.py), but GetString returns the plain name.
-						 * Try both: plain name first, then prefixed. */
-						bool in_list = (_ap_pending_sd.locked_vehicles.count(eng_name) > 0) ||
-						               (_ap_pending_sd.locked_vehicles.count(ih_prefix + eng_name) > 0);
+						bool in_list = (_ap_pending_sd.locked_vehicles.count(eng_name) > 0);
 						if (!in_list) continue;
 					}
 
@@ -2347,21 +1648,19 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Accumulate cargo/profit from completed economy periods */
 			AP_UpdateSessionStats();
 
-			/* Evaluate all incomplete missions */
-			CheckMissions();
 		}
 
-		if (_ap_realtime_ticks >= 40 &&
+		if (_ap_realtime_ticks >= AP_WIN_CHECK_TICKS &&
 		    _ap_session_started && !_ap_goal_sent &&
 		    _game_mode == GM_NORMAL) {
 
 			_ap_realtime_ticks = 0;
-			if (CheckWinCondition(_ap_pending_sd)) {
+			if (CheckWinCondition()) {
 				_ap_goal_sent = true;
 				_ap_client->SendGoal();
 				Debug(misc, 0, "[AP] Win condition reached! Goal sent.");
 				AP_OK("*** WIN CONDITION REACHED! Goal sent to server! ***");
-				AP_ShowNews("[AP] WIN CONDITION REACHED! Goal sent to server!");
+				AP_ShowNews("WIN CONDITION REACHED! Goal sent to server!");
 			}
 		}
 	}

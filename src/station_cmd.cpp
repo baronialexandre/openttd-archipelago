@@ -70,6 +70,7 @@
 #include "cheat_type.h"
 #include "road_func.h"
 #include "station_layout_type.h"
+#include "archipelago.h"
 
 #include "widgets/station_widget.h"
 #include "widgets/misc_widget.h"
@@ -4577,6 +4578,10 @@ const StationList &StationFinder::GetStations()
 
 static bool CanMoveGoodsToStation(const Station *st, CargoType cargo)
 {
+	/* Archipelago cargo lock: local-company stations only receive
+	 * industry-produced cargo once the corresponding cargo item is unlocked. */
+	if (st->owner == _local_company && !AP_IsCargoTypeUnlocked((uint8_t)cargo)) return false;
+
 	/* Is the station reserved exclusively for somebody else? */
 	if (st->owner != OWNER_NONE && st->town->exclusive_counter > 0 && st->town->exclusivity != st->owner) return false;
 

@@ -108,22 +108,14 @@ extern std::string  _ap_last_pass;
 
 std::string  AP_GetCompletedMissionsStr();
 void         AP_SetCompletedMissionsStr(const std::string &s);
-int          AP_GetShopPageOffset();
-void         AP_SetShopPageOffset(int v);
-int          AP_GetShopDayCounter();
-void         AP_SetShopDayCounter(int v);
 bool         AP_GetGoalSent();
 void         AP_SetGoalSent(bool v);
 void         AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out);
 void         AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in);
 std::string  AP_GetMaintainCountersStr();
 void         AP_SetMaintainCountersStr(const std::string &s);
-void         AP_GetEffectTimers(int *fuel, int *cargo, int *reliability, int *station);
-void         AP_SetEffectTimers(int fuel, int cargo, int reliability, int station);
 std::string  AP_GetNamedEntityStr();
 void         AP_SetNamedEntityStr(const std::string &s);
-std::string  AP_GetSentShopStr();
-void         AP_SetSentShopStr(const std::string &s);
 
 /* ── Scratch variable — single string holds all AP state ────────────── */
 static std::string _ap_sl_blob;
@@ -146,9 +138,6 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "pass",  _ap_last_pass);
 
         KVSet(_ap_sl_blob, "completed",   AP_GetCompletedMissionsStr());
-        KVSet(_ap_sl_blob, "shop_offset", IStr(AP_GetShopPageOffset()));
-        KVSet(_ap_sl_blob, "shop_days",   IStr(AP_GetShopDayCounter()));
-        KVSet(_ap_sl_blob, "shop_sent",   AP_GetSentShopStr());
         KVSet(_ap_sl_blob, "goal_sent",   IStr(AP_GetGoalSent()));
 
         constexpr int NC = 64;
@@ -159,13 +148,6 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "cargo",    PackCargo_AP(cargo, NC));
         KVSet(_ap_sl_blob, "maintain", AP_GetMaintainCountersStr());
         KVSet(_ap_sl_blob, "named",    AP_GetNamedEntityStr());
-
-        int fuel = 0, carg = 0, rel = 0, sta = 0;
-        AP_GetEffectTimers(&fuel, &carg, &rel, &sta);
-        KVSet(_ap_sl_blob, "fuel_ticks",  IStr(fuel));
-        KVSet(_ap_sl_blob, "cargo_ticks", IStr(carg));
-        KVSet(_ap_sl_blob, "rel_ticks",   IStr(rel));
-        KVSet(_ap_sl_blob, "sta_ticks",   IStr(sta));
 
         SlTableHeader(_ap_desc);
         SlSetArrayIndex(0);
@@ -201,9 +183,6 @@ struct APSTChunkHandler : ChunkHandler {
                 return ParseI64(KVGet(_ap_sl_blob, key, "0"));
             };
 
-            AP_SetShopPageOffset(getint("shop_offset"));
-            AP_SetShopDayCounter(getint("shop_days"));
-            AP_SetSentShopStr(KVGet(_ap_sl_blob, "shop_sent"));
             AP_SetGoalSent(KVGet(_ap_sl_blob, "goal_sent", "0") == "1");
 
             constexpr int NC = 64;
@@ -213,9 +192,6 @@ struct APSTChunkHandler : ChunkHandler {
 
             AP_SetMaintainCountersStr(KVGet(_ap_sl_blob, "maintain"));
             AP_SetNamedEntityStr(KVGet(_ap_sl_blob, "named"));
-
-            AP_SetEffectTimers(getint("fuel_ticks"), getint("cargo_ticks"),
-                               getint("rel_ticks"),  getint("sta_ticks"));
         } catch (...) {
             /* Parsing failed — AP progress lost but game loads. */
         }

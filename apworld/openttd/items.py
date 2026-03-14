@@ -201,9 +201,22 @@ def create_item_with_correct_classification(world: OpenTTDWorld, name: str) -> O
     return OpenTTDItem(name, classification, ITEM_NAME_TO_ID[name], world.player)
 
 def create_all_items(world: OpenTTDWorld) -> None:
+    # Work on local copies; module-level constants must stay immutable across worlds.
+    progressive_counts = dict(PROGRESSIVE_VEHICLE_TIERS)
+    available_cargo_types = list(CARGO_TYPES)
+
+    # Aircraft starts should only precollect cargo types that aircraft can haul early.
+    # (The reported softlock case was: Progressive Aircrafts + Coal.)
+    compatible_starting_cargo = {
+        "Progressive Trains": set(available_cargo_types),
+        "Progressive Road Vehicles": set(available_cargo_types),
+        "Progressive Ships": set(available_cargo_types),
+        "Progressive Aircrafts": {"Passengers", "Mail", "Goods", "Valuables"},
+    }
+
     # world.options.starting_vehicle_type
     if world.options.starting_vehicle_type == 0:
-        starting_vehicle_type = world.random.choice(list(PROGRESSIVE_VEHICLE_TIERS.keys()))
+        starting_vehicle_type = world.random.choice(list(progressive_counts.keys()))
     elif world.options.starting_vehicle_type == 1:
         starting_vehicle_type = "Progressive Trains"
     elif world.options.starting_vehicle_type == 2:
@@ -214,37 +227,53 @@ def create_all_items(world: OpenTTDWorld) -> None:
         starting_vehicle_type = "Progressive Ships"
 
     world.multiworld.push_precollected(world.create_item(starting_vehicle_type))
-    PROGRESSIVE_VEHICLE_TIERS[starting_vehicle_type] -= 1  # Remove one tier of the chosen vehicle type from the item pool, since it's precollected.    
+    # Remove one tier of the chosen vehicle type from the item pool, since it's precollected.
+    progressive_counts[starting_vehicle_type] -= 1
+
+    allowed_cargo = compatible_starting_cargo[starting_vehicle_type]
+
+    # Build requested cargo from option first; compatibility is checked below.
+    requested_starting_cargo_type = None
 
     # world.options.starting_cargo_type
     if world.options.starting_cargo_type == 0:
-        starting_cargo_type = world.random.choice([c for c in CARGO_TYPES if c not in {"Goods", "Steel"}])
+        random_pool = [c for c in available_cargo_types if c not in {"Goods", "Steel"}]
+        requested_starting_cargo_type = world.random.choice(random_pool)
     elif world.options.starting_cargo_type == 1:
-        starting_cargo_type = "Passengers"
+        requested_starting_cargo_type = "Passengers"
     elif world.options.starting_cargo_type == 2:    
-        starting_cargo_type = "Mail"
+        requested_starting_cargo_type = "Mail"
     elif world.options.starting_cargo_type == 3:
-        starting_cargo_type = "Coal"
+        requested_starting_cargo_type = "Coal"
     elif world.options.starting_cargo_type == 4:
-        starting_cargo_type = "Oil"
+        requested_starting_cargo_type = "Oil"
     elif world.options.starting_cargo_type == 5:
-        starting_cargo_type = "Livestock"
+        requested_starting_cargo_type = "Livestock"
     elif world.options.starting_cargo_type == 6:
-        starting_cargo_type = "Grain"
+        requested_starting_cargo_type = "Grain"
     elif world.options.starting_cargo_type == 7:
-        starting_cargo_type = "Wood"
+        requested_starting_cargo_type = "Wood"
     elif world.options.starting_cargo_type == 8:
-        starting_cargo_type = "Iron Ore"
+        requested_starting_cargo_type = "Iron Ore"
     elif world.options.starting_cargo_type == 9:
-        starting_cargo_type = "Valuables"
+        requested_starting_cargo_type = "Valuables"
+
+    if requested_starting_cargo_type in allowed_cargo:
+        starting_cargo_type = requested_starting_cargo_type
+    else:
+        # Force a compatible fallback to avoid unwinnable starts.
+        fallback_pool = [c for c in available_cargo_types if c in allowed_cargo]
+        starting_cargo_type = world.random.choice(fallback_pool)
+
     world.multiworld.push_precollected(world.create_item(starting_cargo_type))
-    CARGO_TYPES.remove(starting_cargo_type)  # Remove the chosen cargo type from the item pool, since it's precollected.
+    # Remove the chosen cargo type from the item pool, since it's precollected.
+    available_cargo_types.remove(starting_cargo_type)
     
     itempool: list[Item] = []
-    for name , count in PROGRESSIVE_VEHICLE_TIERS.items():
+    for name, count in progressive_counts.items():
         for _ in range(1, count + 1):
             itempool.append(create_item_with_correct_classification(world, name))
-    for name in CARGO_TYPES:
+    for name in available_cargo_types:
         itempool.append(create_item_with_correct_classification(world, name))
     
     number_of_unfilled_locations = len(world.multiworld.get_unfilled_locations(world.player))

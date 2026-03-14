@@ -362,21 +362,6 @@ void ArchipelagoClient::SendGoal()
 	outbound_queue.push_back({ pkt.dump() });
 }
 
-void ArchipelagoClient::SendScoutsForShop()
-{
-	/* Build list of all shop location IDs and send LocationScouts (create_as_hint=0) */
-	std::lock_guard<std::mutex> lg(slot_mutex);
-	json ids = json::array();
-	for (auto &[name, id] : location_ids) {
-		if (name.find("Shop_Purchase_") == 0) ids.push_back(id);
-	}
-	if (ids.empty()) return;
-	json pkt = json::array();
-	pkt.push_back({{"cmd", "LocationScouts"}, {"locations", ids}, {"create_as_hint", 0}});
-	std::lock_guard<std::mutex> lg2(outbound_mutex);
-	outbound_queue.push_back({ pkt.dump() });
-}
-
 void ArchipelagoClient::SendSay(const std::string &text)
 {
 	json pkt = json::array();
@@ -476,15 +461,7 @@ static APSlotData ParseSlotData(const json &msg)
 
 	sd.game_version         = d.value("game_version", "15.2");
 	sd.mission_count        = d.value("mission_count", 100);
-	/* shop_item_count is the direct count (new). Fall back to shop_slots*20 for old saves. */
-	if (d.contains("shop_item_count")) {
-		sd.shop_slots = d.value("shop_item_count", 100);
-	} else {
-		sd.shop_slots = d.value("shop_slots", 5) * 20;
-	}
-	sd.shop_refresh_days    = d.value("shop_refresh_days", 90);
 	sd.starting_vehicle     = d.value("starting_vehicle", "");
-	sd.starting_vehicle_type = d.value("starting_vehicle_type", "");
 	/* starting_vehicles list — present for one_of_each mode.
 	 * Falls back to a single-element list from starting_vehicle. */
 	if (d.contains("starting_vehicles") && d["starting_vehicles"].is_array()) {
@@ -495,6 +472,8 @@ static APSlotData ParseSlotData(const json &msg)
 	if (sd.starting_vehicles.empty() && !sd.starting_vehicle.empty()) {
 		sd.starting_vehicles.push_back(sd.starting_vehicle);
 	}
+	/* New apworld: starting cargo type int (0=any, 1-9 = specific cargo) */
+	sd.starting_cargo_type  = d.value("starting_cargo_type", 0);
 	sd.enable_traps         = d.value("enable_traps", true);
 	sd.start_year           = d.value("start_year", 1950);
 
@@ -504,60 +483,18 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.map_y                = (uint8_t)d.value("map_y", 8);
 	sd.landscape            = (uint8_t)d.value("landscape", 0);
 	sd.land_generator       = (uint8_t)d.value("land_generator", 1);
-
-	/* Win condition */
-	sd.win_condition_value  = d.value("win_condition_value", (int64_t)50000000);
-	std::string wc = d.value("win_condition", "company_value");
-	if      (wc == "town_population") sd.win_condition = APWinCondition::TOWN_POPULATION;
-	else if (wc == "vehicle_count")   sd.win_condition = APWinCondition::VEHICLE_COUNT;
-	else if (wc == "cargo_delivered") sd.win_condition = APWinCondition::CARGO_DELIVERED;
-	else if (wc == "monthly_profit")  sd.win_condition = APWinCondition::MONTHLY_PROFIT;
-	else                              sd.win_condition = APWinCondition::COMPANY_VALUE;
-
-	/* ── Game settings (Accounting) ──────────────────────────────────── */
-	sd.infinite_money            = d.value("infinite_money",       false);
-	sd.inflation                 = d.value("inflation",            false);
-	sd.max_loan                  = d.value("max_loan",             (uint32_t)300000);
-	sd.infrastructure_maintenance = d.value("infrastructure_maintenance", false);
-	sd.vehicle_costs             = (uint8_t)d.value("vehicle_costs",    1);
-	sd.construction_cost         = (uint8_t)d.value("construction_cost", 1);
-
-	/* ── Game settings (Vehicles / Limitations) ──────────────────────── */
-	sd.max_trains                = (uint16_t)d.value("max_trains",        500);
-	sd.max_roadveh               = (uint16_t)d.value("max_roadveh",       500);
-	sd.max_aircraft              = (uint16_t)d.value("max_aircraft",      200);
-	sd.max_ships                 = (uint16_t)d.value("max_ships",         300);
-	sd.max_train_length          = (uint16_t)d.value("max_train_length",  7);
-	sd.station_spread            = (uint16_t)d.value("station_spread",    12);
-	sd.road_stop_on_town_road       = d.value("road_stop_on_town_road",       true);
-	sd.road_stop_on_competitor_road = d.value("road_stop_on_competitor_road", true);
-	sd.crossing_with_competitor     = d.value("crossing_with_competitor",     true);
-
-	/* ── Game settings (Disasters / Accidents) ────────────────────────── */
-	sd.disasters                 = d.value("disasters",            false);
-	sd.plane_crashes             = (uint8_t)d.value("plane_crashes",    2);
-	sd.vehicle_breakdowns        = (uint8_t)d.value("vehicle_breakdowns", 1);
-
-	/* ── Game settings (Economy / Environment) ────────────────────────── */
-	sd.economy_type              = (uint8_t)d.value("economy_type",     1);
-	sd.bribe                     = d.value("bribe",                true);
-	sd.exclusive_rights          = d.value("exclusive_rights",     true);
-	sd.fund_buildings            = d.value("fund_buildings",       true);
-	sd.fund_roads                = d.value("fund_roads",           true);
-	sd.give_money                = d.value("give_money",           true);
-	sd.town_growth_rate          = (uint8_t)d.value("town_growth_rate",  2);
-	sd.found_town                = (uint8_t)d.value("found_town",        0);
-	sd.town_cargo_scale          = (uint16_t)d.value("town_cargo_scale",    100);
-	sd.industry_cargo_scale      = (uint16_t)d.value("industry_cargo_scale", 100);
-	sd.industry_density          = (uint8_t)d.value("industry_density",  4);
-	sd.allow_town_roads          = d.value("allow_town_roads",     true);
-	sd.road_side                 = (uint8_t)d.value("road_side",         1);
+	sd.terrain_type         = (uint8_t)d.value("terrain_type", 1);
+	sd.quantity_sea_lakes   = (uint8_t)d.value("quantity_sea_lakes", 0);
+	sd.variety              = (uint8_t)d.value("variety", 0);
+	sd.tgen_smoothness      = (uint8_t)d.value("tgen_smoothness", 1);
+	sd.amount_of_rivers     = (uint8_t)d.value("amount_of_rivers", 2);
+	sd.water_border_presets = (uint8_t)d.value("water_border_presets", 0);
+	sd.town_name            = (uint8_t)d.value("town_name", 0);
+	sd.number_towns         = (uint8_t)d.value("number_towns", 2);
 
 	/* Death Link — from options.py; note: AP sends this as a top-level slot_data field */
 	sd.death_link                = d.value("death_link",           false);
 	sd.starting_cash_bonus       = d.value("starting_cash_bonus",  0);
-	sd.starting_vehicle_count    = d.value("starting_vehicle_count", 1);
-	sd.mission_difficulty        = d.value("mission_difficulty",   2);
 
 	/* NewGRF options */
 	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
@@ -568,8 +505,6 @@ static APSlotData ParseSlotData(const json &msg)
 	Debug(misc, 0, "[AP] SlotData: map={}x{} landscape={} seed={} traps={}",
 	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape,
 	      sd.world_seed, sd.enable_traps);
-	Debug(misc, 0, "[AP] SlotData: win='{}' target={}",
-	      wc, sd.win_condition_value);
 
 	/* item_id_to_name — APWorld sends this so we can resolve item IDs to names */
 	if (d.contains("item_id_to_name") && d["item_id_to_name"].is_object()) {
@@ -584,23 +519,14 @@ static APSlotData ParseSlotData(const json &msg)
 		Debug(misc, 0, "[AP] SlotData: WARNING — no item_id_to_name! Items cannot be unlocked by name.");
 	}
 
-	/* shop_prices — APWorld sends {location_name: price_in_pounds} */
-	if (d.contains("shop_prices") && d["shop_prices"].is_object()) {
-		for (auto &[loc, price] : d["shop_prices"].items()) {
-			if (price.is_number_integer()) {
-				sd.shop_prices[loc] = price.get<int64_t>();
+	/* location_name_to_id — authoritative mission location mapping from APWorld */
+	if (d.contains("location_name_to_id") && d["location_name_to_id"].is_object()) {
+		for (auto &[name, idv] : d["location_name_to_id"].items()) {
+			if (idv.is_number_integer()) {
+				sd.location_name_to_id[name] = idv.get<int64_t>();
 			}
 		}
-		Debug(misc, 0, "[AP] SlotData: {} shop prices loaded", sd.shop_prices.size());
-
-	/* shop_item_names — APWorld sends {location_name: item_name} */
-	if (d.contains("shop_item_names") && d["shop_item_names"].is_object()) {
-		for (auto &[loc, name] : d["shop_item_names"].items()) {
-			if (name.is_string())
-				sd.shop_item_names[loc] = name.get<std::string>();
-		}
-		Debug(misc, 0, "[AP] SlotData: {} shop item names loaded", sd.shop_item_names.size());
-	}
+		Debug(misc, 0, "[AP] SlotData: {} location name->id mappings loaded", sd.location_name_to_id.size());
 	}
 
 	/* locked_vehicles — the exact set of vehicle names to lock at session start.
@@ -611,8 +537,6 @@ static APSlotData ParseSlotData(const json &msg)
 			if (v.is_string()) sd.locked_vehicles.insert(v.get<std::string>());
 		}
 		Debug(misc, 0, "[AP] SlotData: {} locked_vehicles loaded", sd.locked_vehicles.size());
-	} else {
-		Debug(misc, 0, "[AP] SlotData: no locked_vehicles — will lock ALL non-wagon engines (legacy mode)");
 	}
 
 	/* Parse missions array */
@@ -984,24 +908,9 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				std::lock_guard<std::mutex> lg(slot_mutex);
 				slot_data = sd;
 
-				/* Build location name -> ID map.
-				 * Use the actual missions list from slot_data so the IDs match
-				 * exactly what the APWorld generated — avoids off-by-one mismatches
-				 * when the Python generator produces fewer missions than the
-				 * distribution formula would predict (e.g. due to max_attempts). */
+				/* Build location name -> ID map from APWorld-provided slot_data. */
 				location_ids.clear();
-				int64_t base = 6100000;
-
-				for (const auto &mission : sd.missions) {
-					location_ids[mission.location] = base++;
-				}
-
-				/* Shop locations */
-				int shop_total = sd.shop_slots; /* shop_slots now stores direct item count */
-				for (int i = 1; i <= shop_total; i++) {
-					location_ids[fmt::format("Shop_Purchase_{:04d}", i)] = base++;
-				}
-				location_ids["Goal_Victory"] = base;
+				location_ids = sd.location_name_to_id;
 
 				/* Build reverse map: ID → name */
 				location_id_to_name.clear();
@@ -1026,12 +935,10 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			has_slot_data.store(true);
 			AP_OK(fmt::format("Slot data parsed: {} missions, start_year={}, vehicle='{}'",
 			      sd.mission_count, sd.start_year, sd.starting_vehicle));
-			AP_OK(fmt::format("Win condition: target={}", sd.win_condition_value));
 
 			PushEvent({ InboundEvent::CONNECTED, {}, {}, {} });
 
-			/* Scout all shop locations so we can show player+game labels */
-			SendScoutsForShop();
+			/* Location scouting request removed in current apworld payload. */
 			InboundEvent sdev;
 			sdev.type = InboundEvent::SLOT_DATA;
 			sdev.slot = sd;
@@ -1049,7 +956,10 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 
 		} else if (cmd == "ReceivedItems") {
 			/* AP protocol sends item_id, not item_name.
-			 * We resolve the name from the item_id_to_name map built in ParseSlotData. */
+			 * We resolve the name from the item_id_to_name map built in ParseSlotData.
+			 * The 'index' field is the starting index in the server's full item list for this
+			 * player — used to detect replayed items on reconnect so the client can apply
+			 * their effects silently without re-showing news messages. */
 			if (!msg.contains("items") || !msg["items"].is_array()) continue;
 
 			APSlotData current_sd;
@@ -1058,9 +968,14 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				current_sd = slot_data;
 			}
 
+			int64_t batch_index    = msg.contains("index") ? msg["index"].get<int64_t>() : 0;
+			int64_t already_known  = items_received_index.load();
+			int64_t item_i         = 0;
+
 			for (auto &item : msg["items"]) {
 				APItem ap_item;
-				ap_item.item_id = item.value("item", (int64_t)0);
+				ap_item.item_id   = item.value("item", (int64_t)0);
+				ap_item.is_replay = (batch_index + item_i < already_known);
 
 				/* Resolve name from our id->name map */
 				auto name_it = current_sd.item_id_to_name.find(ap_item.item_id);
@@ -1079,7 +994,12 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				ev.type = InboundEvent::ITEM;
 				ev.item = ap_item;
 				PushEvent(std::move(ev));
+				item_i++;
 			}
+
+			/* Advance high-water mark */
+			int64_t new_mark = batch_index + item_i;
+			if (new_mark > already_known) items_received_index.store(new_mark);
 
 		} else if (cmd == "LocationInfo") {
 			/* Response to LocationScouts — build location_id_to_hint map */
@@ -1101,7 +1021,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 					    ? pname
 					    : fmt::format("{} ({})", pname, pgame);
 				}
-				AP_LOG(fmt::format("[AP] LocationInfo: {} shop slots resolved", msg["locations"].size()));
+				AP_LOG(fmt::format("LocationInfo: {} locations resolved", msg["locations"].size()));
 			}
 
 		} else if (cmd == "PrintJSON") {
@@ -1329,12 +1249,12 @@ void ArchipelagoClient::WorkerThread()
 	AP_OK("WS connection established.");
 #endif
 
-	/* Set recv timeout AFTER handshake — 30s so the loop can poll stop_requested */
+	/* Set recv timeout AFTER handshake — 200ms so disconnect/stop_requested is noticed quickly */
 #ifdef _WIN32
-	DWORD timeout_ms = 30000;
+	DWORD timeout_ms = 200;
 	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
 #else
-	struct timeval tv{30, 0};
+	struct timeval tv{0, 200000};
 	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
 

@@ -1132,11 +1132,6 @@ static Money DeliverGoods(int num_pieces, CargoType cargo_type, StationID dest, 
 		}
 	}
 
-	/* Archipelago Cargo Bonus: double payment while active */
-	if (company->index == _local_company && AP_GetCargoBonusActive()) {
-		profit *= 2;
-	}
-
 	return profit;
 }
 

@@ -66,12 +66,16 @@ class StartYear(Range):
 
 
 class MapSizeX(Choice):
-    """Width of the generated map. Minimum 512 — smaller maps don't have enough towns and industries for named missions."""
+    """Width of the generated map."""
     display_name = "Map Width"
+    option_64   = 0
+    option_128  = 1
+    option_256  = 2
     option_512  = 3
     option_1024 = 4
     option_2048 = 5
-    default = 3  # 512
+    option_4096 = 6
+    default = 2  # 256 (OpenTTD default)
 
     @property
     def map_bits(self) -> int:
@@ -79,12 +83,16 @@ class MapSizeX(Choice):
 
 
 class MapSizeY(Choice):
-    """Height of the generated map. Minimum 512 — smaller maps don't have enough towns and industries for named missions."""
+    """Height of the generated map."""
     display_name = "Map Height"
+    option_64   = 0
+    option_128  = 1
+    option_256  = 2
     option_512  = 3
     option_1024 = 4
     option_2048 = 5
-    default = 3  # 512
+    option_4096 = 6
+    default = 2  # 256 (OpenTTD default)
 
     @property
     def map_bits(self) -> int:
@@ -121,246 +129,104 @@ class IndustryDensity(Choice):
     default = 4
 
 
-# ═══════════════════════════════════════════════════════════════
-#  GAME SETTINGS — ECONOMY & FINANCE
-# ═══════════════════════════════════════════════════════════════
-
-class InfiniteMoney(Toggle):
-    """Allow spending despite negative balance (cheat mode)."""
-    display_name = "Infinite Money"
-    default = 0
-
-
-class Inflation(Toggle):
-    """Enable inflation over time."""
-    display_name = "Inflation"
-    default = 0
+class TerrainType(Choice):
+    """Base terrain shape in map generation."""
+    display_name           = "Terrain Type"
+    option_very_flat       = 0
+    option_flat            = 1
+    option_hilly           = 2
+    option_mountainous     = 3
+    option_alpinist        = 4
+    default = 1  # Flat (OpenTTD default)
 
 
-class MaxLoan(Range):
-    """Maximum initial loan available to the player, in pounds."""
-    display_name = "Maximum Initial Loan (£)"
-    range_start = 100_000
-    range_end   = 500_000_000
-    default     = 300_000
+class VarietyDistribution(Choice):
+    """Landscape variety distribution."""
+    display_name           = "Variety Distribution"
+    option_none            = 0
+    option_very_low        = 1
+    option_low             = 2
+    option_medium          = 3
+    option_high            = 4
+    option_very_high       = 5
+    default = 0  # None (OpenTTD default)
 
 
-class InfrastructureMaintenance(Toggle):
-    """Monthly maintenance fee for owned infrastructure."""
-    display_name = "Infrastructure Maintenance"
-    default = 0
+class Smoothness(Choice):
+    """Roughness/smoothness preset for terrain generator."""
+    display_name           = "Smoothness"
+    option_very_smooth     = 0
+    option_smooth          = 1
+    option_rough           = 2
+    option_very_rough      = 3
+    default = 1  # Smooth (OpenTTD default)
 
 
-class VehicleCosts(Choice):
-    """Running cost multiplier for vehicles."""
-    display_name  = "Vehicle Running Costs"
-    option_low    = 0
-    option_medium = 1
-    option_high   = 2
-    default = 1
+class Rivers(Choice):
+    """Amount of rivers generated."""
+    display_name           = "Rivers"
+    option_none            = 0
+    option_few             = 1
+    option_medium          = 2
+    option_many            = 3
+    default = 2  # Medium (OpenTTD default)
 
 
-class ConstructionCost(Choice):
-    """Construction cost multiplier."""
-    display_name  = "Construction Costs"
-    option_low    = 0
-    option_medium = 1
-    option_high   = 2
-    default = 1
+class MapEdges(Choice):
+    """Map edge preset."""
+    display_name              = "Map Edges"
+    option_random             = 0
+    option_manual             = 1
+    option_infinite_water     = 2
+    default = 2  # Infinite Water
 
 
-class EconomyType(Choice):
-    """Economy volatility type."""
-    display_name    = "Economy Type"
-    option_original = 0
-    option_smooth   = 1
-    option_frozen   = 2
-    default = 1
+class TownNames(Choice):
+    """Town name style."""
+    display_name = "Town Names"
+    option_english_original   = 0
+    option_french             = 1
+    option_german             = 2
+    option_english_additional = 3
+    option_latin_american     = 4
+    option_silly              = 5
+    option_swedish            = 6
+    option_dutch              = 7
+    option_finnish            = 8
+    option_polish             = 9
+    option_slovak             = 10
+    option_norwegian          = 11
+    option_hungarian          = 12
+    option_austrian           = 13
+    option_romanian           = 14
+    option_czech              = 15
+    option_swiss              = 16
+    option_danish             = 17
+    option_turkish            = 18
+    option_italian            = 19
+    option_catalan            = 20
+    default = 0  # English (Original)
 
 
-class Bribe(Toggle):
-    """Allow bribing the local authority."""
-    display_name = "Allow Bribing"
-    default = 1
+class NumberOfTowns(Choice):
+    """Initial number of towns."""
+    display_name = "Number of Towns"
+    option_very_low = 0
+    option_low      = 1
+    option_normal   = 2
+    option_high     = 3
+    default = 2  # Normal (OpenTTD default)
 
 
-class ExclusiveRights(Toggle):
-    """Allow buying exclusive transport rights."""
-    display_name = "Exclusive Rights"
-    default = 1
+class SeaLevel(Choice):
+    """Sea/lake amount preset."""
+    display_name = "Sea Level"
+    option_very_low = 0
+    option_low      = 1
+    option_medium   = 2
+    option_high     = 3
+    default = 0  # Very Low (OpenTTD default)
 
-
-class FundBuildings(Toggle):
-    """Allow funding new buildings in towns."""
-    display_name = "Fund Buildings"
-    default = 1
-
-
-class FundRoads(Toggle):
-    """Allow funding local road reconstruction."""
-    display_name = "Fund Roads"
-    default = 1
-
-
-class GiveMoney(Toggle):
-    """Allow giving money to other companies."""
-    display_name = "Give Money to Competitors"
-    default = 1
-
-
-class TownCargoScale(Range):
-    """Scale cargo production of towns (percent)."""
-    display_name = "Town Cargo Scale (%)"
-    range_start = 15
-    range_end   = 500
-    default     = 100
-
-
-class IndustryCargoScale(Range):
-    """Scale cargo production of industries (percent)."""
-    display_name = "Industry Cargo Scale (%)"
-    range_start = 15
-    range_end   = 500
-    default     = 100
-
-
-# ═══════════════════════════════════════════════════════════════
-#  GAME SETTINGS — VEHICLES & INFRASTRUCTURE
-# ═══════════════════════════════════════════════════════════════
-
-class MaxTrains(Range):
-    """Maximum number of trains per company."""
-    display_name = "Max Trains"
-    range_start = 0
-    range_end   = 65535
-    default     = 500
-
-
-class MaxRoadVehicles(Range):
-    """Maximum number of road vehicles per company."""
-    display_name = "Max Road Vehicles"
-    range_start = 0
-    range_end   = 65535
-    default     = 500
-
-
-class MaxAircraft(Range):
-    """Maximum number of aircraft per company."""
-    display_name = "Max Aircraft"
-    range_start = 0
-    range_end   = 65535
-    default     = 200
-
-
-class MaxShips(Range):
-    """Maximum number of ships per company."""
-    display_name = "Max Ships"
-    range_start = 0
-    range_end   = 65535
-    default     = 300
-
-
-class MaxTrainLength(Range):
-    """Maximum length for trains in tiles. Extended beyond vanilla limit of 64."""
-    display_name = "Max Train Length (tiles)"
-    range_start = 1
-    range_end   = 1000
-    default     = 7
-
-
-class StationSpread(Range):
-    """
-    How many tiles apart station parts may be and still join.
-    Set to 1024 for virtually unlimited spread.
-    """
-    display_name = "Station Spread (tiles)"
-    range_start = 4
-    range_end   = 1024
-    default     = 12
-
-
-class RoadStopOnTownRoad(Toggle):
-    """Allow drive-through road stops on roads owned by towns."""
-    display_name = "Road Stops on Town Roads"
-    default = 1
-
-
-class RoadStopOnCompetitorRoad(Toggle):
-    """Allow drive-through road stops on roads owned by competitors."""
-    display_name = "Road Stops on Competitor Roads"
-    default = 1
-
-
-class CrossingWithCompetitor(Toggle):
-    """Allow level crossings with roads or rails owned by competitors."""
-    display_name = "Level Crossings with Competitors"
-    default = 1
-
-
-class RoadSide(Choice):
-    """Which side of the road vehicles drive on."""
-    display_name = "Drive Side"
-    option_left  = 0
-    option_right = 1
-    default = 1
-
-
-# ═══════════════════════════════════════════════════════════════
-#  GAME SETTINGS — TOWNS & ENVIRONMENT
-# ═══════════════════════════════════════════════════════════════
-
-class TownGrowthRate(Choice):
-    """How fast towns grow."""
-    display_name     = "Town Growth Rate"
-    option_none      = 0
-    option_slow      = 1
-    option_normal    = 2
-    option_fast      = 3
-    option_very_fast = 4
-    default = 2
-
-
-class FoundTown(Choice):
-    """Whether players can found new towns."""
-    display_name          = "Town Founding"
-    option_forbidden      = 0
-    option_allowed        = 1
-    option_custom_layout  = 2
-    default = 0
-
-
-class AllowTownRoads(Toggle):
-    """Allow towns to build their own roads."""
-    display_name = "Towns Build Roads"
-    default = 1
-
-
-# ═══════════════════════════════════════════════════════════════
-#  GAME SETTINGS — DISASTERS & ACCIDENTS
-# ═══════════════════════════════════════════════════════════════
-
-class Disasters(Toggle):
-    """Enable random disasters (floods, UFOs, etc.)."""
-    display_name = "Disasters"
-    default = 0
-
-
-class PlaneCrashes(Choice):
-    """Frequency of plane crashes."""
-    display_name   = "Plane Crashes"
-    option_none    = 0
-    option_reduced = 1
-    option_normal  = 2
-    default = 2
-
-
-class VehicleBreakdowns(Choice):
-    """Likelihood of vehicle breakdowns."""
-    display_name   = "Vehicle Breakdowns"
-    option_none    = 0
-    option_reduced = 1
-    option_normal  = 2
-    default = 1
 
 # ═══════════════════════════════════════════════════════════════
 #  MAIN OPTIONS DATACLASS
@@ -384,41 +250,15 @@ class OpenTTDOptions(PerGameCommonOptions):
     map_size_y:                      MapSizeY
     landscape:                       Landscape
     land_generator:                  LandGenerator
+    terrain_type:                    TerrainType
+    variety_distribution:            VarietyDistribution
+    smoothness:                      Smoothness
+    rivers:                          Rivers
+    map_edges:                       MapEdges
+    town_names:                      TownNames
+    number_of_towns:                 NumberOfTowns
+    sea_level:                       SeaLevel
     industry_density:                IndustryDensity
-    # Economy & Finance
-    infinite_money:                  InfiniteMoney
-    inflation:                       Inflation
-    max_loan:                        MaxLoan
-    infrastructure_maintenance:      InfrastructureMaintenance
-    vehicle_costs:                   VehicleCosts
-    construction_cost:               ConstructionCost
-    economy_type:                    EconomyType
-    bribe:                           Bribe
-    exclusive_rights:                ExclusiveRights
-    fund_buildings:                  FundBuildings
-    fund_roads:                      FundRoads
-    give_money:                      GiveMoney
-    town_cargo_scale:                TownCargoScale
-    industry_cargo_scale:            IndustryCargoScale
-    # Vehicles & Infrastructure
-    max_trains:                      MaxTrains
-    max_roadveh:                     MaxRoadVehicles
-    max_aircraft:                    MaxAircraft
-    max_ships:                       MaxShips
-    max_train_length:                MaxTrainLength
-    station_spread:                  StationSpread
-    road_stop_on_town_road:          RoadStopOnTownRoad
-    road_stop_on_competitor_road:    RoadStopOnCompetitorRoad
-    crossing_with_competitor:        CrossingWithCompetitor
-    road_side:                       RoadSide
-    # Towns & Environment
-    town_growth_rate:                TownGrowthRate
-    found_town:                      FoundTown
-    allow_town_roads:                AllowTownRoads
-    # Disasters & Accidents
-    disasters:                       Disasters
-    plane_crashes:                   PlaneCrashes
-    vehicle_breakdowns:              VehicleBreakdowns
     # Death Link
     death_link:                      OpenTTDDeathLink
 
@@ -438,44 +278,14 @@ openttd_option_groups = [
         MapSizeY,
         Landscape,
         LandGenerator,
+        TerrainType,
+        VarietyDistribution,
+        Smoothness,
+        Rivers,
+        MapEdges,
+        TownNames,
+        NumberOfTowns,
+        SeaLevel,
         IndustryDensity,
-    ]),
-    OptionGroup("Economy & Finance", [
-        InfiniteMoney,
-        Inflation,
-        MaxLoan,
-        InfrastructureMaintenance,
-        VehicleCosts,
-        ConstructionCost,
-        EconomyType,
-        Bribe,
-        ExclusiveRights,
-        FundBuildings,
-        FundRoads,
-        GiveMoney,
-        TownCargoScale,
-        IndustryCargoScale,
-    ]),
-    OptionGroup("Vehicles & Infrastructure", [
-        MaxTrains,
-        MaxRoadVehicles,
-        MaxAircraft,
-        MaxShips,
-        MaxTrainLength,
-        StationSpread,
-        RoadStopOnTownRoad,
-        RoadStopOnCompetitorRoad,
-        CrossingWithCompetitor,
-        RoadSide,
-    ]),
-    OptionGroup("Towns & Environment", [
-        TownGrowthRate,
-        FoundTown,
-        AllowTownRoads,
-    ]),
-    OptionGroup("Disasters & Accidents", [
-        Disasters,
-        PlaneCrashes,
-        VehicleBreakdowns,
     ]),
 ]

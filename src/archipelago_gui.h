@@ -12,11 +12,12 @@
 #include <string>
 #include <cstdint>
 #include <atomic>
+#include <map>
 
 void ShowArchipelagoConnectWindow();
 void ShowArchipelagoStatusWindow();
 void ShowArchipelagoMissionsWindow();
-void ShowArchipelagoShopWindow();
+void ShowArchipelagoInventoryWindow();
 void AP_ShowConsole(const std::string &msg);
 
 extern std::string _ap_last_host;
@@ -29,6 +30,9 @@ extern std::atomic<bool> _ap_status_dirty;
 
 /* Accessor functions from manager */
 const APSlotData &AP_GetSlotData();
+const std::map<std::string, int> &AP_GetReceivedItemCounts();
+const std::map<std::string, std::vector<std::vector<std::string>>> &AP_GetProgressiveTiers();
+const std::map<std::string, int> &AP_GetUnlockedTierCounts();
 void AP_SaveConnectionConfig();
 void AP_LoadConnectionConfig();
 void AP_EnsureBasesets();
@@ -39,20 +43,8 @@ bool              AP_IsConnected();
 void     EnsureHandlersRegistered();
 void     AP_SendCheckByName(const std::string &location_name);
 void     AP_SendDeath(const std::string &cause);  ///< Send Death Link event (train/road crash)
-void     AP_NotifyShopPurchased();     ///< Call when player buys any shop item (triggers shop-purchase missions)
-int      AP_GetShopSlots();
-int      AP_GetShopRefreshDays();
-int      AP_GetShopPageOffset();   ///< Current page offset for shop slot rotation
-std::string AP_GetShopLocationLabel(const std::string &location_name);
-int64_t  AP_GetShopPrice(const std::string &location_name);
-bool     AP_CanAffordShopItem(const std::string &location_name);
-bool     AP_IsShopLocationSent(const std::string &location_name);
-void     AP_DeductShopPrice(const std::string &location_name);
 bool     AP_ShouldStartWorld();
 void     AP_ConsumeWorldStart();   /* applies settings, clears flag */
 uint32_t AP_GetWorldSeed();        /* seed to pass to StartNewGameWithoutGUI */
 
 #endif /* ARCHIPELAGO_GUI_H */
-
-/// Returns true while the 2x cargo payment bonus is active (used by economy.cpp)
-bool AP_GetCargoBonusActive();
