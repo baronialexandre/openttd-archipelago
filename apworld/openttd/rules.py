@@ -80,6 +80,14 @@ def has_cargo(state: CollectionState, player: int, cargo: str) -> bool:
     return False
 
 
+def unlocked_vehicle_type_count(state: CollectionState, player: int) -> int:
+    """Count currently unlocked transport modes from progressive items."""
+    return int(has_vehicle_type(state, player, "train")) + \
+        int(has_vehicle_type(state, player, "road_vehicle")) + \
+        int(has_vehicle_type(state, player, "ship")) + \
+        int(has_vehicle_type(state, player, "aircraft"))
+
+
 def set_all_rules(world: "OpenTTDWorld") -> None:
     """Set access rules for locations.
     
@@ -106,6 +114,18 @@ def set_all_rules(world: "OpenTTDWorld") -> None:
                 location.access_rule = lambda state: has_vehicle_type(state, player, "ship")
             elif "aircraft" in name:
                 location.access_rule = lambda state: has_vehicle_type(state, player, "aircraft")
+
+        # STATION MULTI-MODE MISSIONS
+        elif name.startswith("Have a station handle "):
+            required_types = 0
+            if "2 vehicle types" in name:
+                required_types = 2
+            elif "3 vehicle types" in name:
+                required_types = 3
+            elif "4 vehicle types" in name:
+                required_types = 4
+            if required_types > 0:
+                location.access_rule = lambda state, required_types=required_types: unlocked_vehicle_type_count(state, player) >= required_types
 
         # CARGO MISSIONS
         elif name.startswith("Transport"):

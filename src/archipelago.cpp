@@ -491,6 +491,7 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.water_border_presets = (uint8_t)d.value("water_border_presets", 0);
 	sd.town_name            = (uint8_t)d.value("town_name", 0);
 	sd.number_towns         = (uint8_t)d.value("number_towns", 2);
+	sd.industry_density     = (uint8_t)d.value("industry_density", 4);
 
 	/* Death Link — from options.py; note: AP sends this as a top-level slot_data field */
 	sd.death_link                = d.value("death_link",           false);

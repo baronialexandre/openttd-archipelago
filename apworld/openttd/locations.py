@@ -26,6 +26,11 @@ MISSION_DEFINITIONS = [
     {"location": "Own 2 ships", "description": "Own 2 ships", "type": "have", "cargo": "", "unit": "ships", "amount": 2, "difficulty": "normal"},
     {"location": "Own 2 aircrafts", "description": "Own 2 aircrafts", "type": "have", "cargo": "", "unit": "aircraft", "amount": 2, "difficulty": "normal"},
 
+    # STATION MULTI-MODE MISSIONS
+    {"location": "Have a station handle 2 vehicle types", "description": "Have a station handle 2 vehicle types", "type": "station_vehicle_types", "cargo": "", "unit": "vehicle types", "amount": 2, "difficulty": "normal"},
+    {"location": "Have a station handle 3 vehicle types", "description": "Have a station handle 3 vehicle types", "type": "station_vehicle_types", "cargo": "", "unit": "vehicle types", "amount": 3, "difficulty": "normal"},
+    {"location": "Have a station handle 4 vehicle types", "description": "Have a station handle 4 vehicle types", "type": "station_vehicle_types", "cargo": "", "unit": "vehicle types", "amount": 4, "difficulty": "normal"},
+
     # CARGO MISSIONS (1 unit)
     {"location": "Transport 1 unit of Passengers", "description": "Transport 1 unit of Passengers", "type": "transport", "cargo": "Passengers", "unit": "units", "amount": 1, "difficulty": "normal"},
     {"location": "Transport 1 unit of Mail", "description": "Transport 1 unit of Mail", "type": "transport", "cargo": "Mail", "unit": "units", "amount": 1, "difficulty": "normal"},

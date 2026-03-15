@@ -89,6 +89,7 @@ struct APSlotData {
 	uint8_t                 water_border_presets = 0;  ///< 0=random,1=manual,2=infinite water
 	uint8_t                 town_name            = 0;  ///< 0..255 town-name style index
 	uint8_t                 number_towns         = 2;  ///< 0=very low..3=high
+	uint8_t                 industry_density     = 4;  ///< 0=fund only,1=minimal,2=very low,3=low,4=normal,5=high
 
 	/* ── Death Link ─────────────────────────────────────────────────── */
 	bool                    death_link           = false;
@@ -244,6 +245,12 @@ bool AP_IsActive();
 
 /** Returns true when the cargo type index is unlocked by AP items. */
 bool AP_IsCargoTypeUnlocked(uint8_t cargo_type);
+
+/** Returns true when at least one tier of the progressive item is unlocked. */
+bool AP_IsTrainUnlocked();
+bool AP_IsRoadVehicleUnlocked();
+bool AP_IsAircraftUnlocked();
+bool AP_IsShipUnlocked();
 
 /** Forward a text/command string to the AP server (Say packet). */
 void AP_SendSay(const std::string &text);

@@ -229,6 +229,29 @@ static int AP_CountStations()
 }
 
 /**
+ * Return the highest number of transport modes served by any single station
+ * owned by the local company.
+ * Modes are: rail, road (bus+truck combined), air, ship.
+ */
+static int AP_MaxStationVehicleModes()
+{
+	CompanyID cid = _local_company;
+	int best = 0;
+	for (const Station *st : Station::Iterate()) {
+		if (st->owner != cid) continue;
+
+		int modes = 0;
+		if (st->facilities.Test(StationFacility::Train)) modes++;
+		if (st->facilities.Any({StationFacility::BusStop, StationFacility::TruckStop})) modes++;
+		if (st->facilities.Test(StationFacility::Airport)) modes++;
+		if (st->facilities.Test(StationFacility::Dock)) modes++;
+
+		best = std::max(best, modes);
+	}
+	return best;
+}
+
+/**
  * Count primary vehicles of a given type owned by local company.
  * type == VEH_INVALID means all types.
  */
@@ -309,6 +332,13 @@ static bool EvaluateMission(APMission &m)
 	 * "Build {amount} stations" */
 	else if (m.type == "build") {
 		current = (int64_t)AP_CountStations();
+	}
+
+	/* ── "station_vehicle_types" type ────────────────────────────────
+	 * "Have a station handle {amount} vehicle types"
+	 * Counts rail, road(bus+truck), air, ship at one single station. */
+	else if (m.type == "station_vehicle_types") {
+		current = (int64_t)AP_MaxStationVehicleModes();
 	}
 
 	/* Update live progress on the mission (visible in missions window) */
@@ -531,6 +561,18 @@ static std::map<std::string, int> _ap_unlocked_tier_counts;
 
 const std::map<std::string, std::vector<std::vector<std::string>>> &AP_GetProgressiveTiers() { return _ap_progressive_tiers; }
 const std::map<std::string, int>                                   &AP_GetUnlockedTierCounts() { return _ap_unlocked_tier_counts; }
+
+static bool AP_IsProgressiveUnlocked(const char *name)
+{
+	if (!AP_IsActive()) return true;
+	auto it = _ap_unlocked_tier_counts.find(name);
+	return it != _ap_unlocked_tier_counts.end() && it->second > 0;
+}
+
+bool AP_IsTrainUnlocked() { return AP_IsProgressiveUnlocked("Progressive Trains"); }
+bool AP_IsRoadVehicleUnlocked() { return AP_IsProgressiveUnlocked("Progressive Road Vehicles"); }
+bool AP_IsAircraftUnlocked() { return AP_IsProgressiveUnlocked("Progressive Aircrafts"); }
+bool AP_IsShipUnlocked() { return AP_IsProgressiveUnlocked("Progressive Ships"); }
 
 static bool AP_UnlockEngineByName(const std::string &name)
 {
@@ -943,9 +985,7 @@ void AP_ConsumeWorldStart()
 	      _ap_world_seed_to_use, sd.start_year,
 	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape,
 	      (int)sd.terrain_type, (int)sd.quantity_sea_lakes, (int)sd.number_towns);
-	Debug(misc, 0, "[AP] Game settings: loans={} trains={} roadveh={} train_len={} station_spread={}",
-	      sd.max_loan, sd.max_trains, sd.max_roadveh,
-	      sd.max_train_length, sd.station_spread);
+	Debug(misc, 0, "[AP] World settings: industry_density={}", (int)sd.industry_density);
 	AP_OK(fmt::format("Generating world: seed={} year={} size={}x{} landscape={}",
 	      _ap_world_seed_to_use, sd.start_year,
 	      (1 << sd.map_x), (1 << sd.map_y), (int)sd.landscape));
@@ -1444,6 +1484,19 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 		/* Dispatch inbound AP events */
 		_ap_client->Tick();
+
+		/* If we were in an active AP game session and have returned to menu,
+		 * disconnect cleanly. This covers abandon-game and network/server leave paths. */
+		if (_ap_session_started && _game_mode == GM_MENU) {
+			AP_OK("Left active game session; disconnecting from Archipelago.");
+			_ap_client->Disconnect();
+			_ap_session_started = false;
+			_ap_world_started_this_session = false;
+			_ap_pending_world_start = false;
+			_ap_pending_items.clear();
+			_ap_status_dirty.store(true);
+			return;
+		}
 
 		/* First-tick session setup when we enter GM_NORMAL */
 		if (!_ap_session_started &&
