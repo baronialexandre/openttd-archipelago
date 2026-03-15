@@ -21,15 +21,10 @@
 #include "fontcache.h"
 #include "currency.h"
 #include "fios.h"
-#include "newgrf_config.h"
+#include "network/network.h"
 #include "table/strings.h"
 #include "table/sprites.h"
 #include "safeguards.h"
-
-/* Forward declaration — defined in newgrf_gui.cpp */
-void ShowNewGRFSettings(bool editable, bool show_params, bool exec_changes, GRFConfigList &config);
-/* _grfconfig_newgame is the GRF list used for new game generation (not the running game). */
-extern GRFConfigList _grfconfig_newgame;
 
 /* =========================================================================
  * CONNECT WINDOW
@@ -44,10 +39,24 @@ enum APWidgets : WidgetID {
 	WAPGUI_EDIT_PASS,
 	WAPGUI_STATUS,
 	WAPGUI_SLOT_INFO,
-	WAPGUI_BTN_CONNECT,
-	WAPGUI_BTN_DISCONNECT,
-	WAPGUI_BTN_NEWGRF,
-	WAPGUI_BTN_CLOSE,
+	WAPGUI_SEL_ACTIONS,
+	WAPGUI_BTN_CONNECT_MENU,
+	WAPGUI_BTN_CONNECT_INGAME,
+	WAPGUI_BTN_DISCONNECT_INGAME,
+};
+
+enum APPlayModeWidgets : WidgetID {
+	WAPPM_TEXT,
+	WAPPM_BTN_SINGLE,
+	WAPPM_BTN_MULTI,
+	WAPPM_BTN_CANCEL,
+};
+
+enum APStartFlowWidgets : WidgetID {
+	WAPSF_TEXT,
+	WAPSF_BTN_GENERATE,
+	WAPSF_BTN_LOAD,
+	WAPSF_BTN_CANCEL,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
@@ -72,16 +81,57 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 			EndContainer(),
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_STATUS),    SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_SLOT_INFO), SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
-			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPGUI_BTN_CONNECT),    SetStringTip(STR_ARCHIPELAGO_BTN_CONNECT),    SetMinimalSize(72, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_RED,    WAPGUI_BTN_DISCONNECT), SetStringTip(STR_ARCHIPELAGO_BTN_DISCONNECT), SetMinimalSize(72, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPGUI_BTN_NEWGRF),     SetStringTip(STR_ARCHIPELAGO_BTN_NEWGRF),     SetMinimalSize(72, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPGUI_BTN_CLOSE),      SetStringTip(STR_ARCHIPELAGO_BTN_CLOSE),      SetMinimalSize(72, 14),
+			NWidget(NWID_SELECTION, INVALID_COLOUR, WAPGUI_SEL_ACTIONS),
+				NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+					NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPGUI_BTN_CONNECT_MENU), SetStringTip(STR_ARCHIPELAGO_BTN_CONNECT), SetMinimalSize(220, 14), SetFill(1, 0),
+				EndContainer(),
+				NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+					NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPGUI_BTN_CONNECT_INGAME), SetStringTip(STR_ARCHIPELAGO_BTN_CONNECT), SetMinimalSize(108, 14), SetFill(1, 0),
+					NWidget(WWT_PUSHTXTBTN, COLOUR_RED,   WAPGUI_BTN_DISCONNECT_INGAME), SetStringTip(STR_ARCHIPELAGO_BTN_DISCONNECT), SetMinimalSize(108, 14), SetFill(1, 0),
+				EndContainer(),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),
 	NWidget(WWT_RESIZEBOX, COLOUR_GREY),
 };
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_play_mode_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
+		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_ARCHIPELAGO_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS), SetFill(1, 0), SetResize(1, 0),
+	EndContainer(),
+	NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 1),
+		NWidget(NWID_VERTICAL), SetPIP(4, 4, 4), SetPadding(6),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPPM_TEXT), SetMinimalSize(320, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPPM_BTN_SINGLE), SetStringTip(STR_EMPTY, STR_INTRO_TOOLTIP_NEW_GAME), SetMinimalSize(102, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPPM_BTN_MULTI),  SetStringTip(STR_EMPTY, STR_INTRO_TOOLTIP_MULTIPLAYER), SetMinimalSize(102, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPPM_BTN_CANCEL), SetStringTip(STR_EMPTY, STR_NULL), SetMinimalSize(102, 14), SetFill(1, 0),
+			EndContainer(),
+		EndContainer(),
+	EndContainer(),
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_start_flow_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
+		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_ARCHIPELAGO_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS), SetFill(1, 0), SetResize(1, 0),
+	EndContainer(),
+	NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 1),
+		NWidget(NWID_VERTICAL), SetPIP(4, 4, 4), SetPadding(6),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPSF_TEXT), SetMinimalSize(320, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPSF_BTN_GENERATE), SetStringTip(STR_EMPTY, STR_NULL), SetMinimalSize(102, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPSF_BTN_LOAD),     SetStringTip(STR_EMPTY, STR_INTRO_TOOLTIP_LOAD_GAME), SetMinimalSize(102, 14), SetFill(1, 0),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPSF_BTN_CANCEL),   SetStringTip(STR_EMPTY, STR_NULL), SetMinimalSize(102, 14), SetFill(1, 0),
+			EndContainer(),
+		EndContainer(),
+	EndContainer(),
+};
+
+struct ArchipelagoConnectWindow;
+static void ShowAPPlayModeChoiceWindow();
+static void ShowAPStartFlowChoiceWindow();
 
 struct ArchipelagoConnectWindow : public Window {
 	QueryString server_buf;
@@ -90,6 +140,7 @@ struct ArchipelagoConnectWindow : public Window {
 	std::string server_str, slot_str, pass_str;
 	APState  last_state  = APState::DISCONNECTED;
 	bool     last_has_sd = false;
+	bool     menu_multiplayer_mode = false;
 
 	static std::string StatusStr(APState s, bool has_sd, const std::string &err) {
 		switch (s) {
@@ -113,6 +164,13 @@ struct ArchipelagoConnectWindow : public Window {
 	{
 		if (_ap_client == nullptr) return;
 
+		/* In multiplayer, only the host/server may own the AP connection. */
+		if (_networking && !_network_server) {
+			AP_ShowConsole("[AP] Multiplayer client mode: only the host can connect to Archipelago.");
+			return;
+		}
+
+		AP_SetMenuConnectMultiplayer(this->menu_multiplayer_mode);
 		AP_SetMenuConnectStartNew(start_new_mode);
 
 		/* Strip any scheme prefix the user may have typed — auto-detect handles it */
@@ -141,13 +199,10 @@ struct ArchipelagoConnectWindow : public Window {
 		this->SetDirty();
 	}
 
-	static void MenuConnectModeQueryCallback(Window *w, bool confirmed)
+	void OnMenuPlayModeChosen(bool multiplayer_mode)
 	{
-		auto *self = static_cast<ArchipelagoConnectWindow *>(w);
-		if (self == nullptr || _ap_client == nullptr) return;
-
-		/* Yes = Start new AP game; No = Load existing AP save. */
-		self->StartConnection(confirmed);
+		this->menu_multiplayer_mode = multiplayer_mode;
+		ShowAPStartFlowChoiceWindow();
 	}
 
 	ArchipelagoConnectWindow(WindowDesc &desc, WindowNumber wnum)
@@ -187,6 +242,7 @@ struct ArchipelagoConnectWindow : public Window {
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override {
 		if (_ap_client == nullptr) return;
+		const int text_y = r.top + std::max(0, ((int)r.Height() - GetCharacterHeight(FS_NORMAL)) / 2);
 		switch (widget) {
 			case WAPGUI_STATUS:
 				DrawString(r.left, r.right, r.top,
@@ -196,43 +252,171 @@ struct ArchipelagoConnectWindow : public Window {
 			case WAPGUI_SLOT_INFO:
 				DrawString(r.left, r.right, r.top, SlotInfoStr(_ap_client->HasSlotData()), TC_DARK_GREEN);
 				break;
+			case WAPGUI_BTN_CONNECT_MENU:
+			case WAPGUI_BTN_CONNECT_INGAME:
+				DrawString(r.left, r.right, text_y, "Connect", TC_BLACK, SA_HOR_CENTER);
+				break;
+			case WAPGUI_BTN_DISCONNECT_INGAME:
+				DrawString(r.left, r.right, text_y, "Disconnect", TC_BLACK, SA_HOR_CENTER);
+				break;
 		}
+	}
+
+	void OnPaint() override
+	{
+		this->GetWidget<NWidgetStacked>(WAPGUI_SEL_ACTIONS)->SetDisplayedPlane(_game_mode == GM_MENU ? 0 : 1);
+		this->DrawWidgets();
 	}
 
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override {
 		switch (widget) {
-			case WAPGUI_BTN_CONNECT: {
+			case WAPGUI_BTN_CONNECT_MENU:
+			case WAPGUI_BTN_CONNECT_INGAME: {
 				if (_ap_client == nullptr) break;
 				if (_game_mode == GM_MENU) {
-					ShowQuery(
-						GetEncodedString(STR_JUST_RAW_STRING, std::string("Archipelago: Game Mode")),
-						GetEncodedString(STR_JUST_RAW_STRING,
-							std::string("Start a new AP game?\n\nYes: Generate a new AP world\nNo: Load an existing AP save")),
-						this,
-						MenuConnectModeQueryCallback);
+					ShowAPPlayModeChoiceWindow();
 				} else {
 					/* In an active game, reconnect should never trigger world generation. */
+					this->menu_multiplayer_mode = _networking;
 					this->StartConnection(false);
 				}
 				break;
 			}
-			case WAPGUI_BTN_DISCONNECT:
+			case WAPGUI_BTN_DISCONNECT_INGAME:
 				if (_ap_client) _ap_client->Disconnect();
 				this->SetDirty();
 				break;
-			case WAPGUI_BTN_NEWGRF:
-				/* Open NewGRF settings editing the NEW GAME config (_grfconfig_newgame),
-				 * not the running game's config (_grfconfig).  This matches what the
-				 * world-generation dialog does (genworld_gui.cpp:849). Changes made here
-				 * will apply to the next AP-generated world. */
-				ShowNewGRFSettings(true, true, false, _grfconfig_newgame);
+		}
+	}
+};
+
+struct APPlayModeChoiceWindow : public Window {
+	APPlayModeChoiceWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc)
+	{
+		this->CreateNestedTree();
+		this->FinishInitNested(wnum);
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		const int text_y = r.top + std::max(0, ((int)r.Height() - GetCharacterHeight(FS_NORMAL)) / 2);
+		if (widget == WAPPM_TEXT) {
+			DrawString(r.left, r.right, r.top, "Play AP as Singleplayer or Multiplayer?", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+		if (widget == WAPPM_BTN_SINGLE) {
+			DrawString(r.left, r.right, text_y, "Singleplayer", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+		if (widget == WAPPM_BTN_MULTI) {
+			DrawString(r.left, r.right, text_y, "Multiplayer", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+		if (widget == WAPPM_BTN_CANCEL) {
+			DrawString(r.left, r.right, text_y, "Cancel", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
+	{
+		auto *connect = static_cast<ArchipelagoConnectWindow *>(FindWindowById(WC_ARCHIPELAGO, 0));
+		if (connect == nullptr) {
+			this->Close();
+			return;
+		}
+
+		switch (widget) {
+			case WAPPM_BTN_SINGLE:
+				this->Close();
+				connect->OnMenuPlayModeChosen(false);
 				break;
-			case WAPGUI_BTN_CLOSE:
+			case WAPPM_BTN_MULTI:
+				this->Close();
+				connect->OnMenuPlayModeChosen(true);
+				break;
+			case WAPPM_BTN_CANCEL:
 				this->Close();
 				break;
 		}
 	}
 };
+
+struct APStartFlowChoiceWindow : public Window {
+	APStartFlowChoiceWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc)
+	{
+		this->CreateNestedTree();
+		this->FinishInitNested(wnum);
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		const int text_y = r.top + std::max(0, ((int)r.Height() - GetCharacterHeight(FS_NORMAL)) / 2);
+		if (widget == WAPSF_TEXT) {
+			DrawString(r.left, r.right, r.top, "Generate a new AP map or load an AP save?", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+		if (widget == WAPSF_BTN_GENERATE) {
+			DrawString(r.left, r.right, text_y, "Generate", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+		if (widget == WAPSF_BTN_LOAD) {
+			DrawString(r.left, r.right, text_y, "Load", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+		if (widget == WAPSF_BTN_CANCEL) {
+			DrawString(r.left, r.right, text_y, "Cancel", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
+	{
+		auto *connect = static_cast<ArchipelagoConnectWindow *>(FindWindowById(WC_ARCHIPELAGO, 0));
+		if (connect == nullptr) {
+			this->Close();
+			return;
+		}
+
+		switch (widget) {
+			case WAPSF_BTN_GENERATE:
+				this->Close();
+				connect->StartConnection(true);
+				break;
+			case WAPSF_BTN_LOAD:
+				this->Close();
+				connect->StartConnection(false);
+				break;
+			case WAPSF_BTN_CANCEL:
+				this->Close();
+				break;
+		}
+	}
+};
+
+static WindowDesc _ap_play_mode_desc(
+	WDP_CENTER, {"ap_play_mode"}, 360, 96,
+	WC_ARCHIPELAGO, WC_NONE, {},
+	_nested_ap_play_mode_widgets
+);
+
+static WindowDesc _ap_start_flow_desc(
+	WDP_CENTER, {"ap_start_flow"}, 360, 96,
+	WC_ARCHIPELAGO, WC_NONE, {},
+	_nested_ap_start_flow_widgets
+);
+
+static void ShowAPPlayModeChoiceWindow()
+{
+	CloseWindowById(WC_ARCHIPELAGO, 4);
+	AllocateWindowDescFront<APPlayModeChoiceWindow>(_ap_play_mode_desc, 4);
+}
+
+static void ShowAPStartFlowChoiceWindow()
+{
+	CloseWindowById(WC_ARCHIPELAGO, 5);
+	AllocateWindowDescFront<APStartFlowChoiceWindow>(_ap_start_flow_desc, 5);
+}
 
 static WindowDesc _ap_connect_desc(
 	WDP_CENTER, {}, 380, 196,
@@ -253,10 +437,11 @@ void ShowArchipelagoConnectWindow()
 enum APStatusWidgets : WidgetID {
 	WAPST_STATUS_LINE,
 	WAPST_GOAL_LINE,
-	WAPST_BTN_RECONNECT,
 	WAPST_BTN_MISSIONS,
 	WAPST_BTN_INVENTORY,
-	WAPST_BTN_SETTINGS,
+	WAPST_SEL_SETTINGS,
+	WAPST_BTN_SETTINGS_CONNECTED,
+	WAPST_BTN_SETTINGS_DISCONNECTED,
 };
 
 static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = {
@@ -272,10 +457,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_INVENTORY),  SetStringTip(STR_ARCHIPELAGO_BTN_INVENTORY),  SetMinimalSize(70, 14),
 				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_MISSIONS),  SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS),  SetMinimalSize(70, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_BLUE,   WAPST_BTN_SETTINGS),  SetStringTip(STR_ARCHIPELAGO_BTN_SETTINGS),  SetMinimalSize(70, 14),
-			EndContainer(),
-			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPST_BTN_RECONNECT), SetStringTip(STR_ARCHIPELAGO_BTN_RECONNECT), SetMinimalSize(70, 14),
+				NWidget(NWID_SELECTION, INVALID_COLOUR, WAPST_SEL_SETTINGS),
+					NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPST_BTN_SETTINGS_CONNECTED), SetStringTip(STR_EMPTY), SetMinimalSize(70, 14),
+					NWidget(WWT_PUSHTXTBTN, COLOUR_RED,   WAPST_BTN_SETTINGS_DISCONNECTED), SetStringTip(STR_EMPTY), SetMinimalSize(70, 14),
+				EndContainer(),
 			EndContainer(),
 		EndContainer(),
 	EndContainer(),
@@ -292,8 +477,9 @@ struct ArchipelagoStatusWindow : public Window {
 
 	static std::string StatusLine() {
 		if (_ap_client == nullptr) return "AP: No client";
+		const std::string slot = _ap_last_slot.empty() ? std::string("?") : _ap_last_slot;
 		switch (_ap_client->GetState()) {
-			case APState::AUTHENTICATED:  return "AP: Connected";
+			case APState::AUTHENTICATED:  return "AP: Connected (slot: " + slot + ")";
 			case APState::CONNECTING:     return "AP: Connecting...";
 			case APState::AUTHENTICATING: return "AP: Authenticating...";
 			case APState::AP_ERROR:       return "AP: Error - " + _ap_client->GetLastError();
@@ -339,14 +525,18 @@ struct ArchipelagoStatusWindow : public Window {
 			case WAPST_GOAL_LINE:
 				DrawString(r.left, r.right, r.top, GoalLine(), TC_GOLD);
 				break;
+			case WAPST_BTN_SETTINGS_CONNECTED:
+			case WAPST_BTN_SETTINGS_DISCONNECTED:
+				DrawString(r.left, r.right,
+				    r.top + std::max(0, ((int)r.Height() - GetCharacterHeight(FS_NORMAL)) / 2),
+				    "AP Settings", TC_BLACK, SA_HOR_CENTER);
+				break;
 		}
 	}
 
 	void OnPaint() override {
-		bool disconnected = (_ap_client == nullptr ||
-		    _ap_client->GetState() == APState::DISCONNECTED ||
-		    _ap_client->GetState() == APState::AP_ERROR);
-		this->SetWidgetDisabledState(WAPST_BTN_RECONNECT, !disconnected || _ap_last_host.empty());
+		bool connected = AP_IsConnected();
+		this->GetWidget<NWidgetStacked>(WAPST_SEL_SETTINGS)->SetDisplayedPlane(connected ? 0 : 1);
 		this->SetWidgetDisabledState(WAPST_BTN_MISSIONS, !AP_IsConnected());
 		this->SetWidgetDisabledState(WAPST_BTN_INVENTORY, !AP_IsConnected());
 		this->DrawWidgets();
@@ -354,17 +544,14 @@ struct ArchipelagoStatusWindow : public Window {
 
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override {
 		switch (widget) {
-			case WAPST_BTN_RECONNECT:
-				if (_ap_client && !_ap_last_host.empty())
-					_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass, "OpenTTD", _ap_last_ssl);
-				break;
 			case WAPST_BTN_MISSIONS:
 				ShowArchipelagoMissionsWindow();
 				break;
 			case WAPST_BTN_INVENTORY:
 				ShowArchipelagoInventoryWindow();
 				break;
-			case WAPST_BTN_SETTINGS:
+			case WAPST_BTN_SETTINGS_CONNECTED:
+			case WAPST_BTN_SETTINGS_DISCONNECTED:
 				ShowArchipelagoConnectWindow();
 				break;
 		}

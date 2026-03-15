@@ -21,6 +21,7 @@ void ShowNetworkNeedPassword(std::shared_ptr<class NetworkAuthenticationPassword
 void ShowNetworkChatQueryWindow(DestType type, int dest);
 void ShowJoinStatusWindow();
 void ShowNetworkGameWindow();
+void ShowNetworkStartServerWindow();
 void ShowClientList();
 void ShowNetworkAskRelay(std::string_view server_connection_string, std::string &&relay_connection_string, std::string &&token);
 void ShowNetworkAskSurvey();

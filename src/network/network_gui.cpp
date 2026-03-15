@@ -54,7 +54,7 @@
 
 #include "../safeguards.h"
 
-static void ShowNetworkStartServerWindow();
+void ShowNetworkStartServerWindow();
 
 static ClientID _admin_client_id = INVALID_CLIENT_ID; ///< For what client a confirmation window is open.
 static CompanyID _admin_company_id = CompanyID::Invalid(); ///< For what company a confirmation window is open.
@@ -1003,6 +1003,11 @@ struct NetworkStartServerWindow : public Window {
 			case WID_NSS_SETPWD:
 				/* If password is set, draw red '*' next to 'Set password' button. */
 				if (!_settings_client.network.server_password.empty()) DrawString(r.right + WidgetDimensions::scaled.framerect.left, this->width - WidgetDimensions::scaled.framerect.right, r.top, "*", TC_RED);
+				break;
+
+			case WID_NSS_CURRENT_MAP:
+				DrawString(r.left, r.right, r.top, "Use Current Map", TC_BLACK, SA_HOR_CENTER);
+				break;
 		}
 	}
 
@@ -1078,7 +1083,23 @@ struct NetworkStartServerWindow : public Window {
 				_is_network_server = true;
 				ShowSaveLoadDialog(FT_HEIGHTMAP, SLO_LOAD);
 				break;
+
+			case WID_NSS_CURRENT_MAP:
+				if (!CheckServerName()) return;
+				if (_game_mode != GM_NORMAL) return;
+				if (_networking) return;
+
+				if (!NetworkServerStart()) return;
+				NetworkOnGameStart();
+				this->Close();
+				break;
 		}
+	}
+
+	void OnPaint() override
+	{
+		this->SetWidgetDisabledState(WID_NSS_CURRENT_MAP, _game_mode != GM_NORMAL || _networking);
+		this->DrawWidgets();
 	}
 
 	void OnDropdownSelect(WidgetID widget, int index, int) override
@@ -1187,6 +1208,10 @@ static constexpr std::initializer_list<NWidgetPart> _nested_network_start_server
 					NWidget(WWT_PUSHTXTBTN, COLOUR_WHITE, WID_NSS_PLAY_SCENARIO), SetStringTip(STR_INTRO_PLAY_SCENARIO, STR_INTRO_TOOLTIP_PLAY_SCENARIO), SetFill(1, 0),
 					NWidget(WWT_PUSHTXTBTN, COLOUR_WHITE, WID_NSS_PLAY_HEIGHTMAP), SetStringTip(STR_INTRO_PLAY_HEIGHTMAP, STR_INTRO_TOOLTIP_PLAY_HEIGHTMAP), SetFill(1, 0),
 				EndContainer(),
+
+				NWidget(NWID_HORIZONTAL), SetPIP(0, WidgetDimensions::unscaled.hsep_wide, 0),
+					NWidget(WWT_PUSHTXTBTN, COLOUR_WHITE, WID_NSS_CURRENT_MAP), SetStringTip(STR_EMPTY), SetFill(1, 0),
+				EndContainer(),
 			EndContainer(),
 
 			NWidget(NWID_HORIZONTAL), SetPIPRatio(1, 0, 1),
@@ -1203,7 +1228,7 @@ static WindowDesc _network_start_server_window_desc(
 	_nested_network_start_server_window_widgets
 );
 
-static void ShowNetworkStartServerWindow()
+void ShowNetworkStartServerWindow()
 {
 	if (!NetworkValidateOurClientName()) return;
 

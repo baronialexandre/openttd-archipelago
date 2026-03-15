@@ -415,7 +415,7 @@ void ArchipelagoClient::Tick()
 				if (callbacks.on_item_received) callbacks.on_item_received(ev.item);
 				break;
 			case InboundEvent::PRINT:
-				if (callbacks.on_print) callbacks.on_print(ev.text);
+					if (callbacks.on_print) callbacks.on_print(ev.text, ev.colour);
 				break;
 			case InboundEvent::SLOT_DATA:
 				AP_LOG("[Tick] Dispatching SLOT_DATA event");
@@ -1027,6 +1027,54 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 
 		} else if (cmd == "PrintJSON") {
 			std::string text_out;
+			APPrintColour msg_colour = APPrintColour::DEFAULT;
+			bool colour_set = false;
+
+			auto ParseColourName = [](const std::string &name) -> APPrintColour {
+				if (name == "red") return APPrintColour::RED;
+				if (name == "green") return APPrintColour::GREEN;
+				if (name == "yellow") return APPrintColour::YELLOW;
+				if (name == "blue") return APPrintColour::BLUE;
+				if (name == "magenta") return APPrintColour::MAGENTA;
+				if (name == "cyan") return APPrintColour::CYAN;
+				if (name == "white") return APPrintColour::WHITE;
+				if (name == "orange") return APPrintColour::ORANGE;
+				if (name == "plum") return APPrintColour::PLUM;
+				if (name == "slateblue") return APPrintColour::SLATEBLUE;
+				if (name == "salmon") return APPrintColour::SALMON;
+				return APPrintColour::DEFAULT;
+			};
+
+			auto DerivePartColour = [&](const json &part, const std::string &ptype) -> APPrintColour {
+				if (part.contains("color") && part["color"].is_string()) {
+					return ParseColourName(part["color"].get<std::string>());
+				}
+				if (ptype == "item_name" || ptype == "item_id") {
+					int flags = part.value("flags", 0);
+					if (flags == 0) return APPrintColour::CYAN;
+					if ((flags & 0b001) != 0) return APPrintColour::PLUM;
+					if ((flags & 0b010) != 0) return APPrintColour::SLATEBLUE;
+					if ((flags & 0b100) != 0) return APPrintColour::SALMON;
+					return APPrintColour::CYAN;
+				}
+				if (ptype == "location_name" || ptype == "location_id") return APPrintColour::GREEN;
+				if (ptype == "entrance_name") return APPrintColour::BLUE;
+				if (ptype == "player_id") return APPrintColour::YELLOW;
+				if (ptype == "player_name") return APPrintColour::YELLOW;
+				if (ptype == "hint_status") {
+					int hs = part.value("hint_status", 0);
+					switch (hs) {
+						case 40: return APPrintColour::GREEN;     /* found */
+						case 10: return APPrintColour::SLATEBLUE; /* no priority */
+						case 20: return APPrintColour::SALMON;    /* avoid */
+						case 30: return APPrintColour::PLUM;      /* priority */
+						case 0:  return APPrintColour::WHITE;     /* unspecified */
+						default: return APPrintColour::DEFAULT;
+					}
+				}
+				return APPrintColour::DEFAULT;
+			};
+
 			if (msg.contains("data") && msg["data"].is_array()) {
 				APSlotData current_sd;
 				{ std::lock_guard<std::mutex> lg(slot_mutex); current_sd = slot_data; }
@@ -1034,6 +1082,14 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 				for (auto &part : msg["data"]) {
 					std::string ptype = part.value("type", "text");
 					std::string ptext = part.value("text", "");
+
+					if (!colour_set) {
+						APPrintColour part_colour = DerivePartColour(part, ptype);
+						if (part_colour != APPrintColour::DEFAULT) {
+							msg_colour = part_colour;
+							colour_set = true;
+						}
+					}
 
 					if (ptype == "item_id" || ptype == "item_name") {
 						/* Resolve item ID → human name */
@@ -1071,7 +1127,7 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 					}
 				}
 			}
-			if (!text_out.empty()) PushEvent({ InboundEvent::PRINT, text_out, {}, {} });
+			if (!text_out.empty()) PushEvent({ InboundEvent::PRINT, text_out, msg_colour, {}, {} });
 
 		} else if (cmd == "Bounce") {
 			/* Death Link uses Bounce packets with data.type == "DeathLink" */

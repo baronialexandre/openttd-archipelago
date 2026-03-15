@@ -117,12 +117,28 @@ struct APSlotData {
 	std::vector<APMission>  missions;
 };
 
+/** Message colour categories derived from AP PrintJSON parts. */
+enum class APPrintColour : uint8_t {
+	DEFAULT,
+	RED,
+	GREEN,
+	YELLOW,
+	BLUE,
+	MAGENTA,
+	CYAN,
+	WHITE,
+	ORANGE,
+	PLUM,
+	SLATEBLUE,
+	SALMON,
+};
+
 /** Callbacks fired on the main thread via Tick(). */
 struct APCallbacks {
 	std::function<void()>                    on_connected;
 	std::function<void(const std::string &)> on_disconnected;
 	std::function<void(const APItem &)>      on_item_received;
-	std::function<void(const std::string &)> on_print;
+	std::function<void(const std::string &, APPrintColour)> on_print;
 	std::function<void(const APSlotData &)>  on_slot_data;
 	/** Fired when a Death Link bounce arrives from another player.
 	 *  @param source  The slot name that sent the death. */
@@ -210,6 +226,7 @@ private:
 	struct InboundEvent {
 		enum Type : uint8_t { CONNECTED, DISCONNECTED, ITEM, PRINT, SLOT_DATA, DEATH_RECEIVED } type;
 		std::string text;
+		APPrintColour colour = APPrintColour::DEFAULT;
 		APItem      item;
 		APSlotData  slot;
 	};
@@ -264,5 +281,6 @@ void AP_RegisterConsoleCommands();
  * false = slot data from menu connection waits for player to load a save.
  */
 void AP_SetMenuConnectStartNew(bool start_new);
+void AP_SetMenuConnectMultiplayer(bool multiplayer_mode);
 
 #endif /* ARCHIPELAGO_H */

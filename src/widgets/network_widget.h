@@ -68,6 +68,7 @@ enum NetworkStartServerWidgets : WidgetID {
 	WID_NSS_LOAD_GAME,         ///< Load game button.
 	WID_NSS_PLAY_SCENARIO,     ///< Play scenario button.
 	WID_NSS_PLAY_HEIGHTMAP,    ///< Play heightmap button.
+	WID_NSS_CURRENT_MAP,       ///< Host the currently loaded map.
 
 	WID_NSS_CANCEL,            ///< 'Cancel' button.
 };

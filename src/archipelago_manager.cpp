@@ -69,6 +69,10 @@
 #include "cargomonitor.h"
 #include "newgrf_config.h"
 #include "fileio_func.h"
+#include "network/network.h"
+#include "network/network_func.h"
+#include "network/network_internal.h"
+#include "network/network_gui.h"
 #include "safeguards.h"
 
 #include <array>
@@ -617,18 +621,73 @@ static bool AP_UnlockEngineByName(const std::string &name)
  * In-game news/chat notification
  * ---------------------------------------------------------------------- */
 
-static void AP_ShowNews(const std::string &text)
+static TextColour AP_ToConsoleColour(APPrintColour colour)
+{
+	switch (colour) {
+		case APPrintColour::RED:
+		case APPrintColour::SALMON:
+			return CC_ERROR;
+		case APPrintColour::YELLOW:
+		case APPrintColour::ORANGE:
+			return CC_WARNING;
+		case APPrintColour::GREEN:
+			return CC_INFO;
+		case APPrintColour::BLUE:
+		case APPrintColour::MAGENTA:
+		case APPrintColour::CYAN:
+		case APPrintColour::PLUM:
+		case APPrintColour::SLATEBLUE:
+			return CC_INFO;
+		case APPrintColour::WHITE:
+			return CC_WHITE;
+		default:
+			return CC_INFO;
+	}
+}
+
+static std::string AP_TrimAPPrefix(std::string text)
+{
+	while (text.rfind("[AP]", 0) == 0) {
+		text.erase(0, 4);
+		while (!text.empty() && text[0] == ' ') text.erase(0, 1);
+	}
+	if (text.rfind("AP:", 0) == 0) {
+		text.erase(0, 3);
+		while (!text.empty() && text[0] == ' ') text.erase(0, 1);
+	}
+	return text;
+}
+
+static void AP_ShowNews(const std::string &text, APPrintColour colour = APPrintColour::DEFAULT)
 {
 	/* Normalize server/client messages so console/news never show duplicated
 	 * tags like "[AP] [AP] ...". */
-	std::string clean = text;
-	while (clean.rfind("[AP]", 0) == 0) {
-		clean.erase(0, 4);
-		while (!clean.empty() && clean[0] == ' ') clean.erase(0, 1);
-	}
+	std::string clean = AP_TrimAPPrefix(text);
+	const TextColour console_colour = AP_ToConsoleColour(colour);
 
-	IConsolePrint(CC_INFO, "[AP] " + clean);
+	if (!_networking) {
+		IConsolePrint(console_colour, "AP: " + clean);
+	}
 	Debug(misc, 0, "[AP] {}", clean);
+
+	/* Mirror AP messages into multiplayer chat.
+	 * Host/server path broadcasts to all clients;
+	 * client path injects as an external chat line locally. */
+	if (_networking) {
+		std::string ext_user = "Server";
+		std::string ext_text = clean;
+		auto sep = clean.find(": ");
+		if (sep != std::string::npos && sep > 0) {
+			ext_user = clean.substr(0, sep);
+			ext_text = clean.substr(sep + 2);
+		}
+
+		if (_network_server) {
+			NetworkServerSendExternalChat("AP", console_colour, ext_user, ext_text);
+		} else {
+			NetworkTextMessage(NETWORK_ACTION_EXTERNAL_CHAT, console_colour, false, ext_user, ext_text, std::string("AP"));
+		}
+	}
 
 	if (_game_mode == GM_NORMAL) {
 		AddNewsItem(
@@ -649,11 +708,14 @@ static bool        _ap_pending_world_start         = false;
 static bool        _ap_goal_sent                   = false;
 static bool        _ap_session_started             = false; ///< True once we've done first-tick setup in GM_NORMAL
 static bool        _ap_menu_connect_start_new      = true;  ///< Menu connect mode: true=start new world, false=load save
+static bool        _ap_menu_connect_multiplayer    = false; ///< Main-menu AP connect target: false=singleplayer, true=multiplayer.
+static bool        _ap_open_network_window_pending = false; ///< Open MP window after AP world enters GM_NORMAL.
 
 
 /* Bug B fix: reset per-connection, not global-ever */
 static bool        _ap_world_started_this_session  = false;
 static bool        _ap_named_entity_refresh_needed = false; ///< Set after Load() — defer GetString calls to first game tick
+static bool        _ap_host_autoconnect_attempted  = false; ///< One-shot guard for MP host auto-connect in GM_NORMAL
 
 /* Items received before we've entered GM_NORMAL are queued here */
 static std::vector<APItem> _ap_pending_items;
@@ -670,6 +732,12 @@ bool              AP_IsConnected()  { return _ap_client != nullptr &&
 void AP_SetMenuConnectStartNew(bool start_new)
 {
 	_ap_menu_connect_start_new = start_new;
+}
+
+void AP_SetMenuConnectMultiplayer(bool multiplayer_mode)
+{
+	_ap_menu_connect_multiplayer = multiplayer_mode;
+	_ap_open_network_window_pending = multiplayer_mode;
 }
 
 /* -------------------------------------------------------------------------
@@ -793,10 +861,10 @@ static void AP_OnDisconnected(const std::string &reason)
 	_ap_status_dirty.store(true);
 }
 
-static void AP_OnPrint(const std::string &msg)
+static void AP_OnPrint(const std::string &msg, APPrintColour colour)
 {
 	Debug(misc, 0, "[AP] Server: {}", msg);
-	AP_ShowNews(msg);
+	AP_ShowNews(msg, colour);
 }
 
 /* -------------------------------------------------------------------------
@@ -1494,8 +1562,21 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			_ap_world_started_this_session = false;
 			_ap_pending_world_start = false;
 			_ap_pending_items.clear();
+			_ap_host_autoconnect_attempted = false;
+			_ap_open_network_window_pending = false;
 			_ap_status_dirty.store(true);
 			return;
+		}
+
+		/* Better MP flow: in host/server mode, auto-connect AP at game start when
+		 * saved credentials exist. Clients never auto-connect. */
+		if (_networking && _network_server && _game_mode == GM_NORMAL &&
+		    !_ap_session_started && !_ap_host_autoconnect_attempted &&
+		    _ap_client->GetState() == APState::DISCONNECTED &&
+		    !_ap_last_host.empty() && !_ap_last_slot.empty()) {
+			_ap_host_autoconnect_attempted = true;
+			AP_OK("Multiplayer host detected; auto-connecting Archipelago for this server session.");
+			_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass, "OpenTTD", _ap_last_ssl);
 		}
 
 		/* First-tick session setup when we enter GM_NORMAL */
@@ -1638,6 +1719,12 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 			/* Open the status overlay */
 			ShowArchipelagoStatusWindow();
+
+			if (_ap_open_network_window_pending && !_networking) {
+				_ap_open_network_window_pending = false;
+				AP_OK("Opening Create Server window for AP game hosting.");
+				ShowNetworkStartServerWindow();
+			}
 
 			AP_OK(fmt::format("AP session started. {} engines in map. Mission evaluation active.",
 			      _ap_engine_map.size()));
