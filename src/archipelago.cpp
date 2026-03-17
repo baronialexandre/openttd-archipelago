@@ -438,6 +438,14 @@ static APSlotData ParseSlotData(const json &msg)
 	}
 	const json &d = msg["slot_data"];
 
+	auto GetBoolLike = [&](const char *key, bool fallback) -> bool {
+		if (!d.contains(key)) return fallback;
+		const auto &value = d[key];
+		if (value.is_boolean()) return value.get<bool>();
+		if (value.is_number_integer()) return value.get<int>() != 0;
+		return fallback;
+	};
+
 	sd.game_version         = d.value("game_version", "15.2");
 	sd.mission_count        = d.value("mission_count", 100);
 	sd.starting_vehicle     = d.value("starting_vehicle", "");
@@ -451,7 +459,7 @@ static APSlotData ParseSlotData(const json &msg)
 	if (sd.starting_vehicles.empty() && !sd.starting_vehicle.empty()) {
 		sd.starting_vehicles.push_back(sd.starting_vehicle);
 	}
-	sd.enable_traps         = d.value("enable_traps", true);
+	sd.enable_traps         = GetBoolLike("enable_traps", true);
 	sd.start_year           = d.value("start_year", 1950);
 
 	/* World generation parameters */
@@ -469,10 +477,10 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.town_name            = (uint8_t)d.value("town_name", 0);
 	sd.number_towns         = (uint8_t)d.value("number_towns", 2);
 	sd.industry_density     = (uint8_t)d.value("industry_density", 4);
-	sd.starting_cash_bonus       = d.value("starting_cash_bonus",  false);
+	sd.starting_cash_bonus       = GetBoolLike("starting_cash_bonus", false);
 
 	/* NewGRF options */
-	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
+	sd.enable_iron_horse         = GetBoolLike("enable_iron_horse", false);
 
 	/* Starting cargo type (0=any, 1-9=specific cargo, matching Python StartingCargoType enum) */
 	sd.starting_cargo_type       = d.value("starting_cargo_type", 0);
@@ -517,9 +525,7 @@ static APSlotData ParseSlotData(const json &msg)
 		Debug(misc, 0, "[AP] SlotData: {} locked_vehicles loaded", sd.locked_vehicles.size());
 	}
 
-	if (d.contains("enable_shop") && d["enable_shop"].is_boolean()) {
-		sd.enable_shop = d["enable_shop"].get<bool>();
-	}
+	sd.enable_shop = GetBoolLike("enable_shop", sd.enable_shop);
 	if (d.contains("shop_tiers") && d["shop_tiers"].is_number_integer()) {
 		sd.shop_tiers = d["shop_tiers"].get<int>();
 	}

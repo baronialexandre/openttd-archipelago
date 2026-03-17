@@ -184,7 +184,7 @@ struct ArchipelagoConnectWindow : public Window {
 		_ap_last_slot = slot_str; _ap_last_pass = pass_str;
 		AP_SaveConnectionConfig(); /* persist for next session */
 		_ap_last_ssl = false; /* unused — auto-detect in WorkerThread */
-		_ap_client->Connect(host, port, slot_str, pass_str, "OpenTTD", false);
+		_ap_client->Connect(host, port, slot_str, pass_str, "OpenTTD Cargolock", false);
 
 		if (!start_new_mode && _game_mode == GM_MENU) {
 			ShowSaveLoadDialog(FT_SAVEGAME, SLO_LOAD);

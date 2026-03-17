@@ -1892,7 +1892,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		    !_ap_last_host.empty() && !_ap_last_slot.empty()) {
 			_ap_host_autoconnect_attempted = true;
 			AP_OK("Multiplayer host detected; auto-connecting Archipelago for this server session.");
-			_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass, "OpenTTD", _ap_last_ssl);
+			_ap_client->Connect(_ap_last_host, _ap_last_port, _ap_last_slot, _ap_last_pass, "OpenTTD Cargolock", _ap_last_ssl);
 		}
 
 		/* First-tick session setup when we enter GM_NORMAL */
