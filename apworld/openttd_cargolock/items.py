@@ -209,14 +209,11 @@ ITEM_NAME_TO_ID = {
 for i, colour_item in enumerate(COMPANY_COLOUR_ITEMS, start=19):
     ITEM_NAME_TO_ID[colour_item] = i
 
-ITEM_NAME_TO_ID["Progressive Airports"] = 35
-
 DEFAULT_ITEM_CLASSIFICATION = {
     "Progressive Trains": ItemClassification.progression,
     "Progressive Road Vehicles": ItemClassification.progression,
     "Progressive Aircrafts": ItemClassification.progression,
     "Progressive Ships": ItemClassification.progression,
-    "Progressive Airports": ItemClassification.progression,
     "Progressive Shop Upgrade": ItemClassification.progression,
     "Passengers": ItemClassification.progression,
     "Mail": ItemClassification.progression,
@@ -249,7 +246,6 @@ def create_item_with_correct_classification(world: OpenTTDWorld, name: str) -> O
 def create_all_items(world: OpenTTDWorld) -> None:
     # Work on local copies; module-level constants must stay immutable across worlds.
     progressive_counts = dict(PROGRESSIVE_VEHICLE_TIERS)
-    progressive_counts["Progressive Airports"] = len(PROGRESSIVE_AIRPORTS)
     available_cargo_types = list(CARGO_TYPES)
     available_company_colours = list(COMPANY_COLOUR_ITEMS)
 
@@ -284,10 +280,6 @@ def create_all_items(world: OpenTTDWorld) -> None:
     world.multiworld.push_precollected(world.create_item(starting_vehicle_type))
     # Remove one tier of the chosen vehicle type from the item pool, since it's precollected.
     progressive_counts[starting_vehicle_type] -= 1
-
-    if starting_vehicle_type == "Progressive Aircrafts":
-        world.multiworld.push_precollected(world.create_item("Progressive Airports"))
-        progressive_counts["Progressive Airports"] -= 1
 
     allowed_cargo = compatible_starting_cargo[starting_vehicle_type]
 

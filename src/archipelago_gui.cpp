@@ -857,7 +857,7 @@ static const char * const AP_CARGO_ORDER[] = {
 };
 static const char * const AP_VEHICLE_ORDER[] = {
 	"Progressive Trains", "Progressive Road Vehicles",
-	"Progressive Aircrafts", "Progressive Airports", "Progressive Ships",
+	"Progressive Aircrafts", "Progressive Ships",
 };
 
 struct ArchipelagoInventoryWindow : public Window {
@@ -1114,6 +1114,10 @@ struct ArchipelagoShopWindow : public Window {
 	Scrollbar *scrollbar = nullptr;
 	int row_height = 0;
 	int selected_row = -1;
+	int last_visible_count = -1;
+	int last_total_shop_count = -1;
+	Money last_money = INT64_MIN;
+	int last_purchased_visible_count = -1;
 
 	void RebuildRows()
 	{
@@ -1163,9 +1167,25 @@ struct ArchipelagoShopWindow : public Window {
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
 	{
-		if (_ap_status_dirty.load()) {
+		const APSlotData &sd = AP_GetSlotData();
+		const int visible_count = AP_GetVisibleShopLocationCount();
+		const int total_shop_count = (int)sd.shop_locations.size();
+		const Money money = GetAvailableMoney(_local_company);
+		int purchased_visible_count = 0;
+		for (int i = 0; i < visible_count && i < total_shop_count; i++) {
+			if (AP_IsShopLocationPurchased(sd.shop_locations[i].location)) purchased_visible_count++;
+		}
+
+		if (_ap_status_dirty.load() ||
+		    visible_count != last_visible_count ||
+		    total_shop_count != last_total_shop_count ||
+		    money != last_money ||
+		    purchased_visible_count != last_purchased_visible_count) {
+			last_visible_count = visible_count;
+			last_total_shop_count = total_shop_count;
+			last_money = money;
+			last_purchased_visible_count = purchased_visible_count;
 			RebuildRows();
-			_ap_status_dirty.store(false);
 		}
 	}
 
@@ -1217,7 +1237,7 @@ struct ArchipelagoShopWindow : public Window {
 			const std::string selection = (i == selected_row) ? ">" : " ";
 			const std::string marker = purchased ? "[X]" : "[ ]";
 			const std::string line = fmt::format("{} {} {} - {}", selection, marker, shop->name, AP_FormatMoneyCompact(shop->cost));
-			TextColour colour = purchased ? TC_GREEN : (affordable ? ((i == selected_row) ? TC_GOLD : TC_WHITE) : TC_GREY);
+			TextColour colour = purchased ? TC_DARK_GREEN : (affordable ? ((i == selected_row) ? TC_YELLOW : TC_WHITE) : TC_GREY);
 			DrawString(r.left + 6, r.right - 4, y, line, colour, SA_LEFT | SA_FORCE);
 			y += rh;
 			if (y > r.bottom) break;

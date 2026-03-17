@@ -638,12 +638,6 @@ static const std::map<std::string, std::vector<std::vector<std::string>>> _ap_pr
 		{"Coleman Count", "FFP Dart", "Bakewell Luckett LB-8", "Darwin 100", "Yate Aerospace YAC 1-11", "Bakewell Luckett LB-9", "Guru X2 Helicopter"},
         {"Darwin 200", "Darwin 300", "Yate Haugan", "Guru Galaxy", "Bakewell Luckett LB-10", "Airtaxi A21", "Bakewell Luckett LB80", "Yate Aerospace YAe46", "Darwin 400", "Darwin 500", "Airtaxi A31", "Dinger 100", "Airtaxi A32", "Bakewell Luckett LB-11", "Darwin 600", "Airtaxi A33"},
         {"AirTaxi A34-1000", "Dinger 1000", "Dinger 200", "Yate Z-Shuttle", "Kelling K1", "Kelling K6", "FFP Hyperdart 2", "Kelling K7", "Darwin 700"}
-    }},
-    {"Progressive Airports", {
-		{"Heliport", "Helistation", "Helidepot", "Small Airport"},
-		{"City Airport", "Commuter Airport"},
-		{"Metropolitan Airport", "International Airport"},
-		{"Intercontinental Airport"}
 	}},
     {"Progressive Ships", {
         {"MPS Passenger Ferry", "MPS Oil Tanker", "Yate Cargo Ship"},
@@ -707,12 +701,9 @@ static void AP_LockAllAirports()
 	Debug(misc, 0, "[AP] All {} airports locked for progressive unlocks", airport_count);
 }
 
-static bool AP_UnlockAirportByName(const std::string &name)
+static bool AP_UnlockAirportTier(int tier)
 {
-	if (name != "Progressive Airports") return false;
-
-	int &tier = _ap_unlocked_tier_counts[name];
-	if (tier >= (int)_ap_progressive_airport_tiers.size()) return false;
+	if (tier < 0 || tier >= (int)_ap_progressive_airport_tiers.size()) return false;
 
 	for (const APAirportTierUnlock &airport : _ap_progressive_airport_tiers[tier]) {
 		AP_SetAirportUnlocked(airport.airport_type, true);
@@ -721,6 +712,17 @@ static bool AP_UnlockAirportByName(const std::string &name)
 	InvalidateWindowData(WC_BUILD_STATION, TRANSPORT_AIR);
 	InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_AIR);
 	Debug(misc, 0, "[AP] Progressive airport tier unlocked: tier {}", tier + 1);
+	return true;
+}
+
+static bool AP_UnlockAirportByName(const std::string &name)
+{
+	if (name != "Progressive Airports") return false;
+
+	int &tier = _ap_unlocked_tier_counts[name];
+	if (tier >= (int)_ap_progressive_airport_tiers.size()) return false;
+
+	if (!AP_UnlockAirportTier(tier)) return false;
 	tier++;
 	return true;
 }
@@ -800,6 +802,9 @@ static bool AP_UnlockEngineByName(const std::string &name)
                 }
             }
         }
+		if (name == "Progressive Aircrafts") {
+			AP_UnlockAirportTier(tier);
+		}
         InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
         Debug(misc, 0, "[AP] Progressive tier unlocked: {} tier {}", name, tier+1);
         tier++;
@@ -1113,16 +1118,16 @@ static void AP_OnItemReceived(const APItem &item)
 	_ap_received_item_counts[item.item_name]++;
 	_ap_status_dirty.store(true);
 
-	/* Progressive vehicle unlock — delegate entirely to EnableEngineForCompany */
-	if (AP_UnlockEngineByName(item.item_name)) {
-		if (!is_replay) AP_ShowNews("Unlocked: " + item.item_name);
-		return;
-	}
-
 	if (AP_UnlockAirportByName(item.item_name)) {
 		if (!is_replay) AP_ShowNews("Airport tier unlocked: " + item.item_name);
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
 		_ap_status_dirty.store(true);
+		return;
+	}
+
+	/* Progressive vehicle unlock — delegate entirely to EnableEngineForCompany */
+	if (AP_UnlockEngineByName(item.item_name)) {
+		if (!is_replay) AP_ShowNews("Unlocked: " + item.item_name);
 		return;
 	}
 

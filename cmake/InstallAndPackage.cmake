@@ -171,7 +171,11 @@ elseif(WIN32)
         include(PackageNSIS)
     endif()
 
-    set(CPACK_PACKAGE_FILE_NAME "openttd-#CPACK_PACKAGE_VERSION#-windows-${CPACK_SYSTEM_NAME}")
+    if(AP_RELEASE_VERSION)
+        set(CPACK_PACKAGE_FILE_NAME "${AP_RELEASE_PACKAGE_NAME}-v${AP_RELEASE_VERSION}-${CPACK_SYSTEM_NAME}")
+    else()
+        set(CPACK_PACKAGE_FILE_NAME "openttd-#CPACK_PACKAGE_VERSION#-windows-${CPACK_SYSTEM_NAME}")
+    endif()
 
     if(DEFINED ENV{AZURE_CODESIGN_PROFILE_NAME})
       add_custom_command(TARGET openttd
