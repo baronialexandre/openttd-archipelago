@@ -3188,11 +3188,6 @@ static uint TrainCrashed(Train *v)
 		victims = v->Crash();
 		AI::NewEvent(v->owner, new ScriptEventVehicleCrashed(v->index, v->tile, ScriptEventVehicleCrashed::CRASH_TRAIN, victims, v->owner));
 		Game::NewEvent(new ScriptEventVehicleCrashed(v->index, v->tile, ScriptEventVehicleCrashed::CRASH_TRAIN, victims, v->owner));
-
-		/* Death Link: send a death if this is the local company's train */
-		if (v->owner == _local_company) {
-			AP_SendDeath("Train crash");
-		}
 	}
 
 	/* Try to re-reserve track under already crashed train too.

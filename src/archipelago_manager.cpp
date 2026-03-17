@@ -27,11 +27,13 @@
 #include "base_media_graphics.h"
 #include "base_media_sounds.h"
 #include "base_media_music.h"
+#include "currency.h"
 #include "engine_base.h"
 #include "engine_func.h"
 #include "engine_type.h"
 #include "company_func.h"
 #include "company_base.h"
+#include "company_cmd.h"
 #include "vehicle_base.h"
 #include "industry.h"
 #include "town.h"
@@ -69,6 +71,7 @@
 #include "cargomonitor.h"
 #include "newgrf_config.h"
 #include "fileio_func.h"
+#include "highscore.h"
 #include "network/network.h"
 #include "network/network_func.h"
 #include "network/network_internal.h"
@@ -91,6 +94,9 @@
 static std::map<std::string, CargoType> _ap_cargo_map;
 static bool _ap_cargo_map_built = false;
 static std::array<bool, NUM_CARGO> _ap_unlocked_cargo_types{};
+static std::set<Colours> _ap_unlocked_company_colours;
+static std::set<std::string> _ap_purchased_shop_locations;
+static std::set<std::string> _ap_completed_mission_locations;
 
 static void BuildCargoMap()
 {
@@ -144,6 +150,14 @@ static Money    _ap_cumul_profit                = 0;   ///< Profit earned in com
 static bool     _ap_stats_initialized          = false;
 static std::map<std::string, int> _ap_received_item_counts; ///< Count of each received item (all types, for inventory display and win-condition checks)
 
+static void AP_RefreshMoneyDisplays()
+{
+	SetWindowDirty(WC_STATUS_BAR, 0);
+	SetWindowDirty(WC_MAIN_TOOLBAR, 0);
+	SetWindowClassesDirty(WC_ARCHIPELAGO);
+	_ap_status_dirty.store(true);
+}
+
 /** Snapshot of last-seen old_economy[0] values (for change detection) */
 static uint32_t _ap_snap_cargo[NUM_CARGO]       = {};
 static Money    _ap_snap_profit                 = 0;
@@ -158,7 +172,7 @@ static void AP_InitSessionStats()
 }
 
 /**
- * Called every ~5 s from the realtime timer.
+ * Called every ~10 s from the realtime timer.
  * If old_economy[0] has changed since last call, accumulate the values.
  */
 static void AP_UpdateSessionStats()
@@ -201,6 +215,15 @@ static void AP_UpdateSessionStats()
 	}
 }
 
+static std::string AP_FormatLocalCurrency(int64_t amount)
+{
+	const CurrencySpec &cs = GetCurrency();
+	int64_t scaled = amount * cs.rate;
+	std::string number = fmt::format("{}", scaled);
+	if (cs.symbol_pos == 0) return cs.prefix + number + cs.suffix;
+	return number + cs.suffix;
+}
+
 /**
  * Get total cargo delivered of a specific type: completed periods + current period.
  */
@@ -213,7 +236,7 @@ static uint64_t AP_GetTotalCargo(CargoType ct)
 }
 
 /* -------------------------------------------------------------------------
- * Mission evaluation — called every ~5 s from the realtime timer.
+ * Mission evaluation — called every ~1 s from the realtime timer.
  * For each incomplete mission, compute the current progress value and
  * check if the mission goal is met.  When met, send the location check
  * to the AP server and mark it completed.
@@ -345,6 +368,16 @@ static bool EvaluateMission(APMission &m)
 		current = (int64_t)AP_MaxStationVehicleModes();
 	}
 
+	/* ── "collect_cargo" type ──────────────────────────────────────
+	 * "Unlock a cargo type" — mission is satisfied once the cargo type
+	 * has been granted via an AP item.  Used by both hardcoded fallback
+	 * missions and any APWorld-provided missions of this type. */
+	else if (m.type == "collect_cargo") {
+		/* cargo field contains cargo name (e.g. "Passengers") */
+		CargoType ct = AP_FindCargoType(m.cargo);
+		current = (IsValidCargoType(ct) && _ap_unlocked_cargo_types[ct]) ? 1 : 0;
+	}
+
 	/* Update live progress on the mission (visible in missions window) */
 	m.current_value = current;
 
@@ -360,6 +393,18 @@ uint16_t    _ap_last_port     = 38281;
 std::string _ap_last_slot;
 std::string _ap_last_pass;
 bool        _ap_last_ssl = false;
+static std::string _ap_progress_slot_identity;
+
+static std::string AP_MakeSlotIdentity(const std::string &host, uint16_t port, const std::string &slot)
+{
+	if (host.empty() || slot.empty()) return {};
+	return fmt::format("{}:{}|{}", host, port, slot);
+}
+
+static std::string AP_GetCurrentConnectionSlotIdentity()
+{
+	return AP_MakeSlotIdentity(_ap_last_host, _ap_last_port, _ap_last_slot);
+}
 
 /* -------------------------------------------------------------------------
  * Engine name <-> EngineID map
@@ -471,6 +516,47 @@ bool AP_IsCargoTypeUnlocked(uint8_t cargo_type)
 	return _ap_unlocked_cargo_types[cargo_type];
 }
 
+static bool AP_IsCargoWagonEngine(const Engine *e)
+{
+	return e != nullptr &&
+		e->type == VEH_TRAIN &&
+		e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON;
+}
+
+static bool AP_ShouldWagonBeUnlockedForCargo(const Engine *e)
+{
+	if (!AP_IsCargoWagonEngine(e)) return false;
+	CargoType ct = e->GetDefaultCargoType();
+	if (!IsValidCargoType(ct) || ct >= NUM_CARGO) return false;
+	return _ap_unlocked_cargo_types[ct];
+}
+
+static void AP_ApplyCargoWagonUnlocks(CompanyID cid)
+{
+	if (cid >= MAX_COMPANIES) return;
+
+	bool changed = false;
+	for (Engine *e : Engine::Iterate()) {
+		if (!AP_IsCargoWagonEngine(e)) continue;
+
+		const bool should_have = AP_ShouldWagonBeUnlockedForCargo(e);
+		const bool has = e->company_avail.Test(cid);
+
+		if (should_have) {
+			if (!has) {
+				e->flags.Set(EngineFlag::Available);
+				EnableEngineForCompany(e->index, cid);
+				changed = true;
+			}
+		} else if (has) {
+			e->company_avail.Reset(cid);
+			changed = true;
+		}
+	}
+
+	if (changed) InvalidateWindowClassesData(WC_BUILD_VEHICLE, 0);
+}
+
 /* -------------------------------------------------------------------------
  * AP_SendSay — forward a chat/command string to the AP server.
  * Used by the "ap" console command so players can type AP server commands
@@ -548,16 +634,36 @@ static const std::map<std::string, std::vector<std::vector<std::string>>> _ap_pr
         {"Foster MkII Superbus"}
     }},
     {"Progressive Aircrafts", {
-        {"Sampson U52", "Bakewell Cotswald LB-3", "Coleman Count"},
-        {"FFP Dart", "Bakewell Luckett LB-8", "Darwin 100", "Yate Aerospace YAC 1-11", "Bakewell Luckett LB-9", "Tricario Helicopter", "Guru X2 Helicopter"},
+		{"Sampson U52", "Bakewell Cotswald LB-3", "Tricario Helicopter"},
+		{"Coleman Count", "FFP Dart", "Bakewell Luckett LB-8", "Darwin 100", "Yate Aerospace YAC 1-11", "Bakewell Luckett LB-9", "Guru X2 Helicopter"},
         {"Darwin 200", "Darwin 300", "Yate Haugan", "Guru Galaxy", "Bakewell Luckett LB-10", "Airtaxi A21", "Bakewell Luckett LB80", "Yate Aerospace YAe46", "Darwin 400", "Darwin 500", "Airtaxi A31", "Dinger 100", "Airtaxi A32", "Bakewell Luckett LB-11", "Darwin 600", "Airtaxi A33"},
         {"AirTaxi A34-1000", "Dinger 1000", "Dinger 200", "Yate Z-Shuttle", "Kelling K1", "Kelling K6", "FFP Hyperdart 2", "Kelling K7", "Darwin 700"}
     }},
+    {"Progressive Airports", {
+		{"Heliport", "Helistation", "Helidepot", "Small Airport"},
+		{"City Airport", "Commuter Airport"},
+		{"Metropolitan Airport", "International Airport"},
+		{"Intercontinental Airport"}
+	}},
     {"Progressive Ships", {
         {"MPS Passenger Ferry", "MPS Oil Tanker", "Yate Cargo Ship"},
         {"FFP Passenger Ferry", "CS-Inc. Oil Tanker", "Bakewell Cargo Ship"},
         {"Bakewell 300 Hovercraft"}
     }}
+};
+
+struct APAirportTierUnlock {
+	const char *name;
+	uint8_t airport_type;
+};
+
+static constexpr TimerGameCalendar::Year AP_LOCKED_AIRPORT_YEAR = TimerGameCalendar::Year{5000001};
+
+static const std::vector<std::vector<APAirportTierUnlock>> _ap_progressive_airport_tiers = {
+	{{"Heliport", AT_HELIPORT}, {"Helistation", AT_HELISTATION}, {"Helidepot", AT_HELIDEPOT}, {"Small Airport", AT_SMALL}},
+	{{"City Airport", AT_LARGE}, {"Commuter Airport", AT_COMMUTER}},
+	{{"Metropolitan Airport", AT_METROPOLITAN}, {"International Airport", AT_INTERNATIONAL}},
+	{{"Intercontinental Airport", AT_INTERCON}},
 };
 
 /* Tracks how many tiers have been unlocked per progressive item this session. */
@@ -577,6 +683,94 @@ bool AP_IsTrainUnlocked() { return AP_IsProgressiveUnlocked("Progressive Trains"
 bool AP_IsRoadVehicleUnlocked() { return AP_IsProgressiveUnlocked("Progressive Road Vehicles"); }
 bool AP_IsAircraftUnlocked() { return AP_IsProgressiveUnlocked("Progressive Aircrafts"); }
 bool AP_IsShipUnlocked() { return AP_IsProgressiveUnlocked("Progressive Ships"); }
+
+static void AP_SetAirportUnlocked(uint8_t airport_type, bool unlocked)
+{
+	if (airport_type >= NUM_AIRPORTS || airport_type == AT_OILRIG) return;
+	AirportSpec *as = AirportSpec::GetWithoutOverride(airport_type);
+	if (as == nullptr || !as->enabled) return;
+	as->min_year = unlocked ? TimerGameCalendar::Year{0} : AP_LOCKED_AIRPORT_YEAR;
+}
+
+static void AP_LockAllAirports()
+{
+	int airport_count = 0;
+	for (uint8_t i = 0; i < NUM_AIRPORTS; i++) {
+		if (i == AT_OILRIG) continue;
+		AirportSpec *as = AirportSpec::GetWithoutOverride(i);
+		if (as == nullptr || !as->enabled) continue;
+		AP_SetAirportUnlocked(i, false);
+		airport_count++;
+	}
+	InvalidateWindowData(WC_BUILD_STATION, TRANSPORT_AIR);
+	InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_AIR);
+	Debug(misc, 0, "[AP] All {} airports locked for progressive unlocks", airport_count);
+}
+
+static bool AP_UnlockAirportByName(const std::string &name)
+{
+	if (name != "Progressive Airports") return false;
+
+	int &tier = _ap_unlocked_tier_counts[name];
+	if (tier >= (int)_ap_progressive_airport_tiers.size()) return false;
+
+	for (const APAirportTierUnlock &airport : _ap_progressive_airport_tiers[tier]) {
+		AP_SetAirportUnlocked(airport.airport_type, true);
+	}
+
+	InvalidateWindowData(WC_BUILD_STATION, TRANSPORT_AIR);
+	InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_AIR);
+	Debug(misc, 0, "[AP] Progressive airport tier unlocked: tier {}", tier + 1);
+	tier++;
+	return true;
+}
+
+bool AP_IsCompanyColourUnlocked(Colours colour)
+{
+	if (!AP_IsActive()) return true;
+	if (colour >= COLOUR_END) return true;
+	return _ap_unlocked_company_colours.count(colour) > 0;
+}
+
+static bool AP_TryUnlockCompanyColour(const std::string &item_name)
+{
+	static const std::pair<const char *, Colours> kCompanyColourItems[] = {
+		{ "Company Colour: Dark Blue",  COLOUR_DARK_BLUE  },
+		{ "Company Colour: Pale Green", COLOUR_PALE_GREEN },
+		{ "Company Colour: Pink",       COLOUR_PINK       },
+		{ "Company Colour: Yellow",     COLOUR_YELLOW     },
+		{ "Company Colour: Red",        COLOUR_RED        },
+		{ "Company Colour: Light Blue", COLOUR_LIGHT_BLUE },
+		{ "Company Colour: Green",      COLOUR_GREEN      },
+		{ "Company Colour: Dark Green", COLOUR_DARK_GREEN },
+		{ "Company Colour: Blue",       COLOUR_BLUE       },
+		{ "Company Colour: Cream",      COLOUR_CREAM      },
+		{ "Company Colour: Mauve",      COLOUR_MAUVE      },
+		{ "Company Colour: Purple",     COLOUR_PURPLE     },
+		{ "Company Colour: Orange",     COLOUR_ORANGE     },
+		{ "Company Colour: Brown",      COLOUR_BROWN      },
+		{ "Company Colour: Grey",       COLOUR_GREY       },
+		{ "Company Colour: White",      COLOUR_WHITE      },
+	};
+
+	for (const auto &[name, colour] : kCompanyColourItems) {
+		if (item_name != name) continue;
+
+		const bool was_empty = _ap_unlocked_company_colours.empty();
+		_ap_unlocked_company_colours.insert(colour);
+
+		/* Ensure the active player's default company colour is always one they own.
+		 * This makes the precollected starting colour immediately take effect. */
+		Company *c = Company::GetIfValid(_local_company);
+		if (c != nullptr && (was_empty || !AP_IsCompanyColourUnlocked(c->colour))) {
+			Command<CMD_SET_COMPANY_COLOUR>::Post(LS_DEFAULT, true, colour);
+		}
+
+		return true;
+	}
+
+	return false;
+}
 
 static bool AP_UnlockEngineByName(const std::string &name)
 {
@@ -665,14 +859,12 @@ static void AP_ShowNews(const std::string &text, APPrintColour colour = APPrintC
 	std::string clean = AP_TrimAPPrefix(text);
 	const TextColour console_colour = AP_ToConsoleColour(colour);
 
-	if (!_networking) {
-		IConsolePrint(console_colour, "AP: " + clean);
-	}
+	IConsolePrint(console_colour, "AP: " + clean);
 	Debug(misc, 0, "[AP] {}", clean);
 
-	/* Mirror AP messages into multiplayer chat.
-	 * Host/server path broadcasts to all clients;
-	 * client path injects as an external chat line locally. */
+	/* Show AP messages in local chat only.
+	 * In multiplayer, broadcasting AP lines from host to all clients causes
+	 * duplicates when each client also has their own AP connection. */
 	if (_networking) {
 		std::string ext_user = "Server";
 		std::string ext_text = clean;
@@ -681,12 +873,7 @@ static void AP_ShowNews(const std::string &text, APPrintColour colour = APPrintC
 			ext_user = clean.substr(0, sep);
 			ext_text = clean.substr(sep + 2);
 		}
-
-		if (_network_server) {
-			NetworkServerSendExternalChat("AP", console_colour, ext_user, ext_text);
-		} else {
-			NetworkTextMessage(NETWORK_ACTION_EXTERNAL_CHAT, console_colour, false, ext_user, ext_text, std::string("AP"));
-		}
+		NetworkTextMessage(NETWORK_ACTION_EXTERNAL_CHAT, console_colour, false, ext_user, ext_text, std::string("AP"));
 	}
 
 	if (_game_mode == GM_NORMAL) {
@@ -712,13 +899,27 @@ static bool        _ap_menu_connect_multiplayer    = false; ///< Main-menu AP co
 static bool        _ap_open_network_window_pending = false; ///< Open MP window after AP world enters GM_NORMAL.
 
 
-/* Bug B fix: reset per-connection, not global-ever */
+/* _ap_world_started_this_session is reset per-connection so that a
+ * reconnect to the same save can re-trigger AP world-start handshake. */
 static bool        _ap_world_started_this_session  = false;
 static bool        _ap_named_entity_refresh_needed = false; ///< Set after Load() — defer GetString calls to first game tick
 static bool        _ap_host_autoconnect_attempted  = false; ///< One-shot guard for MP host auto-connect in GM_NORMAL
+static std::string _ap_starting_grants_applied_slot;        ///< Slot name for which starters/cash were already applied in this save/session.
 
 /* Items received before we've entered GM_NORMAL are queued here */
 static std::vector<APItem> _ap_pending_items;
+
+static void AP_ResetProgressStateForNewSlot()
+{
+	_ap_completed_mission_locations.clear();
+	_ap_purchased_shop_locations.clear();
+	_ap_goal_sent = false;
+	_ap_pending_items.clear();
+	_ap_received_item_counts.clear();
+	_ap_unlocked_tier_counts.clear();
+	_ap_starting_grants_applied_slot.clear();
+	AP_InitSessionStats();
+}
 
 /* Exposed for GUI polling */
 std::atomic<bool> _ap_status_dirty{ false };
@@ -728,6 +929,57 @@ const APSlotData                   &AP_GetSlotData()           { return _ap_pend
 const std::map<std::string, int>   &AP_GetReceivedItemCounts() { return _ap_received_item_counts; }
 bool              AP_IsConnected()  { return _ap_client != nullptr &&
                                      _ap_client->GetState() == APState::AUTHENTICATED; }
+
+static int AP_GetShopTierSize()
+{
+	const APSlotData &sd = AP_GetSlotData();
+	const int total_slots = sd.enable_shop ? (int)sd.shop_locations.size() : 0;
+	if (total_slots <= 0) return 0;
+	const int shop_tiers = std::max(1, std::min(sd.shop_tiers, total_slots));
+	return (total_slots + shop_tiers - 1) / shop_tiers;
+}
+
+int AP_GetVisibleShopLocationCount()
+{
+	const APSlotData &sd = AP_GetSlotData();
+	if (!sd.enable_shop) return 0;
+	const int total_slots = (int)sd.shop_locations.size();
+	if (total_slots <= 0) return 0;
+	const int upgrades = _ap_received_item_counts.count("Progressive Shop Upgrade")
+		? _ap_received_item_counts.at("Progressive Shop Upgrade")
+		: 0;
+	return std::min(total_slots, AP_GetShopTierSize() * (1 + upgrades));
+}
+
+bool AP_IsShopLocationPurchased(const std::string &location_name)
+{
+	return _ap_purchased_shop_locations.count(location_name) != 0;
+}
+
+bool AP_PurchaseShopLocation(const std::string &location_name)
+{
+	if (!AP_GetSlotData().enable_shop) return false;
+	const int visible_count = AP_GetVisibleShopLocationCount();
+	const auto it = std::find_if(_ap_pending_sd.shop_locations.begin(), _ap_pending_sd.shop_locations.end(),
+	    [&](const APShopLocation &shop) { return shop.location == location_name; });
+	if (it == _ap_pending_sd.shop_locations.end()) return false;
+	if ((int)std::distance(_ap_pending_sd.shop_locations.begin(), it) >= visible_count) return false;
+	if (AP_IsShopLocationPurchased(location_name)) return false;
+
+	Money available = GetAvailableMoney(_local_company);
+	if (available < (Money)it->cost) {
+		AP_ShowNews("Not enough money for " + it->name + ".", APPrintColour::RED);
+		return false;
+	}
+
+	SubtractMoneyFromCompany(CommandCost(EXPENSES_OTHER, (Money)it->cost));
+	_ap_purchased_shop_locations.insert(location_name);
+	AP_SendCheckByName(location_name);
+	AP_ShowNews(fmt::format("Purchased {} for {}.", it->name, it->cost), APPrintColour::GREEN);
+	SetWindowClassesDirty(WC_ARCHIPELAGO);
+	_ap_status_dirty.store(true);
+	return true;
+}
 
 void AP_SetMenuConnectStartNew(bool start_new)
 {
@@ -747,11 +999,72 @@ void AP_SetMenuConnectMultiplayer(bool multiplayer_mode)
 /* Forward declaration — defined later in this file */
 static void AP_AssignNamedEntities();
 
+static std::set<std::string> AP_ParseCompletedMissionLocations(const std::string &s)
+{
+	std::set<std::string> done;
+	if (s.empty()) return done;
+
+	std::string token;
+	for (char c : s) {
+		if (c == ',') {
+			if (!token.empty()) done.insert(token);
+			token.clear();
+		} else {
+			token += c;
+		}
+	}
+	if (!token.empty()) done.insert(token);
+	return done;
+}
+
+static void AP_ApplyCompletedMissionRestore()
+{
+	for (APMission &m : _ap_pending_sd.missions) {
+		bool completed = (_ap_completed_mission_locations.count(m.location) != 0);
+		if (!completed) {
+			auto id_it = _ap_pending_sd.location_name_to_id.find(m.location);
+			if (id_it != _ap_pending_sd.location_name_to_id.end()) {
+				completed = (_ap_pending_sd.checked_locations.count(id_it->second) != 0);
+			}
+		}
+		if (completed) {
+			m.completed = true;
+			_ap_completed_mission_locations.insert(m.location);
+		}
+	}
+}
+
+static void AP_ApplyPurchasedShopRestore()
+{
+	for (const APShopLocation &shop : _ap_pending_sd.shop_locations) {
+		bool purchased = (_ap_purchased_shop_locations.count(shop.location) != 0);
+		if (!purchased) {
+			auto id_it = _ap_pending_sd.location_name_to_id.find(shop.location);
+			if (id_it != _ap_pending_sd.location_name_to_id.end()) {
+				purchased = (_ap_pending_sd.checked_locations.count(id_it->second) != 0);
+			}
+		}
+		if (purchased) _ap_purchased_shop_locations.insert(shop.location);
+	}
+}
+
 static void AP_OnSlotData(const APSlotData &sd)
 {
 	AP_OK("[CALLBACK] AP_OnSlotData called on main thread!");
 	Debug(misc, 1, "[AP] Slot data received. {} missions, start_year={}",
 	      sd.missions.size(), sd.start_year);
+
+	const std::string incoming_slot_identity = AP_GetCurrentConnectionSlotIdentity();
+	if (!_ap_progress_slot_identity.empty() &&
+	    !incoming_slot_identity.empty() &&
+	    _ap_progress_slot_identity != incoming_slot_identity) {
+		AP_WARN(fmt::format("Slot changed ({} -> {}); clearing cached AP progress state.",
+		    _ap_progress_slot_identity, incoming_slot_identity));
+		AP_ResetProgressStateForNewSlot();
+	}
+	if (!incoming_slot_identity.empty()) {
+		_ap_progress_slot_identity = incoming_slot_identity;
+	}
 
 	_ap_pending_sd      = sd;
 	_ap_session_started = false; /* reset so first-tick setup runs again */
@@ -759,6 +1072,8 @@ static void AP_OnSlotData(const APSlotData &sd)
 	_ap_engine_map_built = false; /* rebuild map for new session */
 	_ap_cargo_map_built  = false; /* rebuild cargo map for new session */
 	_ap_unlocked_cargo_types.fill(false);
+	AP_ApplyCompletedMissionRestore();
+	AP_ApplyPurchasedShopRestore();
 	_ap_status_dirty.store(true);
 
 	/* Only auto-start world if we're on the main menu, start-new mode is selected,
@@ -804,6 +1119,13 @@ static void AP_OnItemReceived(const APItem &item)
 		return;
 	}
 
+	if (AP_UnlockAirportByName(item.item_name)) {
+		if (!is_replay) AP_ShowNews("Airport tier unlocked: " + item.item_name);
+		SetWindowClassesDirty(WC_ARCHIPELAGO);
+		_ap_status_dirty.store(true);
+		return;
+	}
+
 	/* -- Cargo type items ----------------------------------------- */
 	static const std::set<std::string> CARGO_ITEM_NAMES = {
 		"Passengers", "Mail", "Coal", "Oil", "Livestock", "Goods",
@@ -813,6 +1135,7 @@ static void AP_OnItemReceived(const APItem &item)
 		CargoType ct = AP_FindCargoType(item.item_name);
 		if (IsValidCargoType(ct) && ct < NUM_CARGO) {
 			_ap_unlocked_cargo_types[ct] = true;
+			AP_ApplyCargoWagonUnlocks(_local_company);
 		}
 		if (!is_replay) AP_ShowNews("Cargo type unlocked: " + item.item_name);
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
@@ -820,13 +1143,31 @@ static void AP_OnItemReceived(const APItem &item)
 		return;
 	}
 
+	if (item.item_name == "Progressive Shop Upgrade") {
+		if (!is_replay && AP_GetSlotData().enable_shop) {
+			AP_ShowNews(fmt::format("Shop expanded: {}/{} locations visible.", AP_GetVisibleShopLocationCount(), _ap_pending_sd.shop_locations.size()));
+		}
+		SetWindowClassesDirty(WC_ARCHIPELAGO);
+		_ap_status_dirty.store(true);
+		return;
+	}
+
+	/* -- Company colour items ------------------------------------- */
+	if (AP_TryUnlockCompanyColour(item.item_name)) {
+		if (!is_replay) AP_ShowNews("Company colour unlocked: " + item.item_name.substr(std::string("Company Colour: ").size()));
+		return;
+	}
+
 	/* -- Filler items --------------------------------------------- */
-	if (item.item_name == "50,000 $") {
+	if (item.item_name == "Cash Injection") {
 		if (!is_replay) {
 			CompanyID fid = _local_company;
 			Company *fc = Company::GetIfValid(fid);
-			if (fc != nullptr) fc->money += (Money)50000LL;
-			AP_ShowNews("Bonus: +$50,000!");
+			if (fc != nullptr) {
+				fc->money += (Money)50000LL;
+				AP_RefreshMoneyDisplays();
+			}
+			AP_ShowNews("Bonus: +" + AP_FormatLocalCurrency(50000) + "!");
 		}
 		return;
 	}
@@ -857,6 +1198,8 @@ static void AP_OnDisconnected(const std::string &reason)
 	_ap_pending_world_start = false;
 	_ap_session_started = false;
 	_ap_unlocked_cargo_types.fill(false);
+	_ap_unlocked_company_colours.clear();
+	if (_game_mode == GM_MENU) _ap_completed_mission_locations.clear();
 	AP_LOG("Session flags reset — next connect can start world");
 	_ap_status_dirty.store(true);
 }
@@ -864,88 +1207,27 @@ static void AP_OnDisconnected(const std::string &reason)
 static void AP_OnPrint(const std::string &msg, APPrintColour colour)
 {
 	Debug(misc, 0, "[AP] Server: {}", msg);
+
 	AP_ShowNews(msg, colour);
 }
 
 /* -------------------------------------------------------------------------
- * Death Link — outbound: called by crash hooks in train_cmd.cpp / roadveh_cmd.cpp
+ * Locations Updated — fired when RoomUpdate brings new checked locations
+ * from another client for the same slot (e.g. a slow-release client).
  * ---------------------------------------------------------------------- */
 
-/** Cooldown between processing incoming deaths (in realtime ticks, 1 tick = 250 ms). */
-static int _ap_death_cooldown_ticks = 0;
-
-/** Send a death to all other Death-Link participants.
- *  Only fires if Death Link is enabled in slot_data. */
-void AP_SendDeath(const std::string &cause)
+static void AP_OnLocationsUpdated()
 {
-	if (_ap_client == nullptr) return;
-	if (!AP_GetSlotData().death_link) return;
-	if (!_ap_session_started) return;
-	_ap_client->SendDeath(cause);
-	Debug(misc, 0, "[AP] Death sent: {}", cause);
+	if (_ap_client != nullptr) {
+		APSlotData current_sd = _ap_client->GetSlotData();
+		_ap_pending_sd.checked_locations = current_sd.checked_locations;
+		AP_ApplyCompletedMissionRestore();
+		AP_ApplyPurchasedShopRestore();
+	}
+	SetWindowClassesDirty(WC_ARCHIPELAGO);
+	_ap_status_dirty.store(true);
 }
 
-/* -------------------------------------------------------------------------
- * Death Link — inbound: find an industry connected to the player's stations
- * and shut it down as the "death" penalty.
- * ---------------------------------------------------------------------- */
-
-static void AP_OnDeathReceived(const std::string &source)
-{
-	if (!_ap_session_started) return;
-	if (_ap_death_cooldown_ticks > 0) {
-		Debug(misc, 0, "[AP] Death from {} ignored — cooldown active", source);
-		return;
-	}
-	/* Start 30-second cooldown (120 ticks × 250 ms) */
-	_ap_death_cooldown_ticks = 120;
-
-	CompanyID cid = _local_company;
-
-	/* Build a list of active (non-crashed, not in depot) primary vehicles owned by the player. */
-	std::vector<Vehicle *> candidates;
-	for (Vehicle *v : Vehicle::Iterate()) {
-		if (v->owner != cid) continue;
-		if (!v->IsPrimaryVehicle()) continue;
-		if (v->vehstatus.Test(VehState::Crashed)) continue;
-		if (v->IsChainInDepot()) continue;
-		candidates.push_back(v);
-	}
-
-	if (!candidates.empty()) {
-		/* Pick a random vehicle and crash it. Virtual dispatch handles
-		 * type-specific logic (track reservation clearing, animations, etc.) */
-		Vehicle *victim = candidates[RandomRange((uint32_t)candidates.size())];
-		std::string veh_name = victim->name.empty()
-			? fmt::format("Vehicle #{}", victim->index.base())
-			: std::string(victim->name);
-		victim->Crash();
-		AddNewsItem(
-			GetEncodedString(STR_ARCHIPELAGO_NEWS,
-			    fmt::format("DEATH LINK from {}! {} was destroyed!", source, veh_name)),
-			NewsType::General,
-			NewsStyle::Normal,
-			{}
-		);
-		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! {} destroyed!", source, veh_name));
-		Debug(misc, 0, "[AP] Death received from {} — crashed vehicle {}", source, victim->index.base());
-	} else {
-		/* Fallback: no active vehicles — take a money penalty */
-		Company *c = Company::GetIfValid(cid);
-		if (c != nullptr) {
-			c->money -= (Money)std::max((int64_t)50000LL, (int64_t)(c->money / 10));
-		}
-		AddNewsItem(
-			GetEncodedString(STR_ARCHIPELAGO_NEWS,
-			    fmt::format("DEATH LINK from {}! Emergency costs drained your funds!", source)),
-			NewsType::General,
-			NewsStyle::Normal,
-			{}
-		);
-		IConsolePrint(CC_ERROR, fmt::format("[AP] DEATH LINK from {}! Emergency costs drained your funds!", source));
-		Debug(misc, 0, "[AP] Death received from {} — no active vehicles, money penalty applied", source);
-	}
-}
 
 /* -------------------------------------------------------------------------
  * Handler registration
@@ -963,7 +1245,7 @@ void EnsureHandlersRegistered()
 	_ap_client->callbacks.on_print         = AP_OnPrint;
 	_ap_client->callbacks.on_slot_data     = AP_OnSlotData;
 	_ap_client->callbacks.on_item_received = AP_OnItemReceived;
-	_ap_client->callbacks.on_death_received = AP_OnDeathReceived;
+	_ap_client->callbacks.on_locations_updated = AP_OnLocationsUpdated;
 }
 
 /* -------------------------------------------------------------------------
@@ -1087,26 +1369,35 @@ void AP_SendCheckByName(const std::string &location_name)
  * Responsibilities:
  *   1. Pump the AP network client (Tick)
  *   2. First-tick session setup when we enter GM_NORMAL:
- *        - Build engine name map
- *        - Unlock the starting vehicle via EnableEngineForCompany
+ *        - Build engine name map (English, with never_expire set)
+ *        - Lock all engines and wagons; unlock via AP progression
+ *        - Apply starting cash bonus and starting cargo type
+ *        - Populate hardcoded missions if APWorld sent none
  *        - Flush any items that arrived before GM_NORMAL
  *        - Open the AP status window
- *   3. Win-condition polling every ~5 s
+ *   3. Win-condition polling every ~10 s
  *
- * NOTE: Engine locking is no longer done here.  engine.cpp blocks the
- * vanilla date-based introduction loop when AP_IsActive() is true.
- * Engines are locked by default (company_avail is empty until an engine's
- * intro_date would have fired), and we unlock them on demand.
+ * NOTE: Engine locking on session start is done inside the first-tick
+ * setup block (step 2 above), not via the vanilla date-based introduction
+ * loop.  engine.cpp skips NewVehicleAvailable() when AP_IsActive() is true,
+ * so no engine becomes available through the normal date path.  Instead the
+ * session setup locks engines/wagons directly and AP items unlock them on
+ * demand via EnableEngineForCompany() (wagons are gated by cargo unlocks).
  * ---------------------------------------------------------------------- */
 
 static uint32_t _ap_realtime_ticks = 0;
-static constexpr uint32_t AP_RT_TICK_MS            = 250;
-static constexpr uint32_t AP_MISSION_CHECK_TICKS   = 4;   /* 1 second */
-static constexpr uint32_t AP_STATS_AND_LOCK_TICKS  = 40;  /* 10 seconds */
-static constexpr uint32_t AP_WIN_CHECK_TICKS       = 40;  /* 10 seconds */
+static constexpr uint32_t AP_MISSION_CHECK_TICKS   = 4;   /* 1 second  (4 × 250 ms) */
+static constexpr uint32_t AP_STATS_AND_LOCK_TICKS  = 40;  /* 10 seconds (40 × 250 ms) */
+static constexpr uint32_t AP_WIN_CHECK_TICKS       = 40;  /* 10 seconds (40 × 250 ms) */
 
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
 void AP_SetGoalSent(bool v)  { _ap_goal_sent = v; }
+
+std::string AP_GetStartingGrantsAppliedSlot() { return _ap_starting_grants_applied_slot; }
+void AP_SetStartingGrantsAppliedSlot(const std::string &slot) { _ap_starting_grants_applied_slot = slot; }
+
+std::string AP_GetProgressSlotIdentity() { return _ap_progress_slot_identity; }
+void AP_SetProgressSlotIdentity(const std::string &slot_identity) { _ap_progress_slot_identity = slot_identity; }
 
 
 
@@ -1121,20 +1412,43 @@ std::string AP_GetCompletedMissionsStr()
     return out;
 }
 
+std::string AP_GetPurchasedShopLocationsStr()
+{
+	std::string out;
+	for (const std::string &location : _ap_purchased_shop_locations) {
+		if (!out.empty()) out += ',';
+		out += location;
+	}
+	return out;
+}
+
 void AP_SetCompletedMissionsStr(const std::string &s)
 {
-    if (s.empty()) return;
-    /* Split by comma and mark matching missions as completed */
-    std::set<std::string> done;
-    std::string token;
-    for (char c : s) {
-        if (c == ',') { if (!token.empty()) done.insert(token); token.clear(); }
-        else token += c;
-    }
-    if (!token.empty()) done.insert(token);
-    for (APMission &m : _ap_pending_sd.missions) {
-        if (done.count(m.location)) m.completed = true;
-    }
+	_ap_completed_mission_locations = AP_ParseCompletedMissionLocations(s);
+	AP_ApplyCompletedMissionRestore();
+}
+
+void AP_SetPurchasedShopLocationsStr(const std::string &s)
+{
+	_ap_purchased_shop_locations.clear();
+	if (s.empty()) {
+		AP_ApplyPurchasedShopRestore();
+		_ap_status_dirty.store(true);
+		return;
+	}
+
+	std::string token;
+	for (char c : s) {
+		if (c == ',') {
+			if (!token.empty()) _ap_purchased_shop_locations.insert(token);
+			token.clear();
+		} else {
+			token += c;
+		}
+	}
+	if (!token.empty()) _ap_purchased_shop_locations.insert(token);
+	AP_ApplyPurchasedShopRestore();
+	_ap_status_dirty.store(true);
 }
 
 void AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out)
@@ -1517,7 +1831,7 @@ static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
 
 /**
  * Iterate all incomplete missions and send checks for any that are now met.
- * Called from the realtime timer every ~5 s.
+ * Called from the realtime timer every ~1 s.
  */
 static void CheckMissions()
 {
@@ -1544,6 +1858,22 @@ static void CheckMissions()
 
 
 
+void AP_OnLeaveGame()
+{
+	if (_ap_client == nullptr) return;
+	if (_ap_client->GetState() == APState::DISCONNECTED) return;
+	AP_OK("Left game; disconnecting from Archipelago.");
+	_ap_client->Disconnect();
+	_ap_session_started = false;
+	_ap_world_started_this_session = false;
+	_ap_starting_grants_applied_slot.clear();
+	_ap_pending_world_start = false;
+	_ap_pending_items.clear();
+	_ap_host_autoconnect_attempted = false;
+	_ap_open_network_window_pending = false;
+	_ap_status_dirty.store(true);
+}
+
 static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 	{ std::chrono::milliseconds(250), TimerGameRealtime::ALWAYS },
 	[](auto) {
@@ -1553,23 +1883,9 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		/* Dispatch inbound AP events */
 		_ap_client->Tick();
 
-		/* If we were in an active AP game session and have returned to menu,
-		 * disconnect cleanly. This covers abandon-game and network/server leave paths. */
-		if (_ap_session_started && _game_mode == GM_MENU) {
-			AP_OK("Left active game session; disconnecting from Archipelago.");
-			_ap_client->Disconnect();
-			_ap_session_started = false;
-			_ap_world_started_this_session = false;
-			_ap_pending_world_start = false;
-			_ap_pending_items.clear();
-			_ap_host_autoconnect_attempted = false;
-			_ap_open_network_window_pending = false;
-			_ap_status_dirty.store(true);
-			return;
-		}
-
 		/* Better MP flow: in host/server mode, auto-connect AP at game start when
-		 * saved credentials exist. Clients never auto-connect. */
+		 * saved credentials exist. Network clients may still connect manually from
+		 * the AP window for their own slot/company. */
 		if (_networking && _network_server && _game_mode == GM_NORMAL &&
 		    !_ap_session_started && !_ap_host_autoconnect_attempted &&
 		    _ap_client->GetState() == APState::DISCONNECTED &&
@@ -1585,12 +1901,13 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		    _local_company < MAX_COMPANIES &&
 		    _ap_client->GetState() == APState::AUTHENTICATED) {
 
-			const bool is_reconnect = (_ap_client->GetReceivedItemsIndex() > 0);
+			const bool apply_starting_grants = _ap_starting_grants_applied_slot != _ap_last_slot;
 
 			_ap_session_started = true;
 			_ap_received_item_counts.clear();  /* reset for fresh item tracking this session */
 			_ap_unlocked_tier_counts.clear();  /* reset tier progress — items will replay and re-unlock */
 			_ap_unlocked_cargo_types.fill(false);
+			_ap_unlocked_company_colours.clear();
 
 			CompanyID cid = _local_company;
 			Company *c = Company::GetIfValid(cid);
@@ -1625,17 +1942,15 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 			/* Strip the local company from every ENGINE that was auto-unlocked
 			 * by StartupOneEngine() at game start.
-			 * WAGONS are excluded — they are always freely available so the
-			 * player can use any locomotive they receive from AP.
 			 *
-			 * All non-wagon engines are locked at session start; AP items unlock them progressively. */
+			 * Non-wagon engines unlock via AP vehicle items.
+			 * Wagon engines unlock via AP cargo items (matching default cargo).
+			 */
 			_ap_unlocked_engine_ids.clear();
 
 			int locked_count = 0;
 			for (Engine *e : Engine::Iterate()) {
 				if (!e->company_avail.Test(cid)) { continue; }
-				bool is_wagon = (e->type == VEH_TRAIN && e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON);
-				if (is_wagon) { continue; }
 				e->company_avail.Reset(cid);
 				locked_count++;
 			}
@@ -1648,70 +1963,96 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				c->avail_roadtypes = GetRoadTypes(true);
 			}
 
-			/* Unlock ALL airports immediately regardless of in-game year.
-			 * AirportSpec::IsAvailable() checks min_year before never_expire_airports,
-			 * so setting min_year=0 on every enabled spec is the only reliable fix.
-			 * We leave max_year alone — never_expire_airports handles expiry. */
-			{
-				int airport_count = 0;
-				for (uint8_t i = 0; i < NUM_AIRPORTS; i++) {
-					AirportSpec *as = AirportSpec::GetWithoutOverride(i);
-					if (as == nullptr || !as->enabled) continue;
-					if (as->min_year > TimerGameCalendar::Year{0}) {
-						as->min_year = TimerGameCalendar::Year{0};
-					}
-					airport_count++;
-				}
-				InvalidateWindowData(WC_BUILD_STATION, TRANSPORT_AIR);
-				Debug(misc, 0, "[AP] All {} airports unlocked (min_year reset to 0)", airport_count);
-			}
+			AP_LockAllAirports();
 
 			InvalidateWindowClassesData(WC_BUILD_VEHICLE);
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_RAIL);
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_ROAD);
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_WATER);
 			InvalidateWindowData(WC_BUILD_TOOLBAR, TRANSPORT_AIR);
-			AP_OK(fmt::format("AP session started: {} engines locked, all railtypes/roadtypes unlocked.", locked_count));
+			AP_OK(fmt::format("AP session started: {} engines locked, all railtypes/roadtypes unlocked, airports gated by AP progression.", locked_count));
 
-			/* Unlock all starting vehicles.
-			 * The APWorld is responsible for ensuring only climate-compatible
-			 * vehicles appear in starting_vehicles — no fallback substitution. */
-			for (const std::string &sv : _ap_pending_sd.starting_vehicles) {
-				if (sv.empty()) continue;
-				if (!_ap_engine_map_built) BuildEngineMap();
-				if (AP_UnlockEngineByName(sv)) {
-					AP_OK("Starting vehicle unlocked: " + sv);
-					if (!is_reconnect) AP_ShowNews("Starting vehicle: " + sv);
-				} else {
-					/* Engine not found — try rebuilding the map once (covers edge
-					 * cases where the map was built before all NewGRFs finished
-					 * loading). */
-					AP_WARN("Starting vehicle '" + sv + "' not found — rebuilding engine map and retrying");
-					_ap_engine_map_built = false;
-					BuildEngineMap();
+			if (apply_starting_grants) {
+				/* Unlock all starting vehicles.
+				 * The APWorld is responsible for ensuring only climate-compatible
+				 * vehicles appear in starting_vehicles — no fallback substitution. */
+				for (const std::string &sv : _ap_pending_sd.starting_vehicles) {
+					if (sv.empty()) continue;
+					if (!_ap_engine_map_built) BuildEngineMap();
 					if (AP_UnlockEngineByName(sv)) {
-						AP_OK("Starting vehicle unlocked after map rebuild: " + sv);
-						if (!is_reconnect) AP_ShowNews("Starting vehicle: " + sv);
+						AP_OK("Starting vehicle unlocked: " + sv);
+						AP_ShowNews("Starting vehicle: " + sv);
 					} else {
-						AP_ERR("Starting vehicle '" + sv + "' not found in engine map!");
+						/* Engine not found — try rebuilding the map once (covers edge
+						 * cases where the map was built before all NewGRFs finished
+						 * loading). */
+						AP_WARN("Starting vehicle '" + sv + "' not found — rebuilding engine map and retrying");
+						_ap_engine_map_built = false;
+						BuildEngineMap();
+						if (AP_UnlockEngineByName(sv)) {
+							AP_OK("Starting vehicle unlocked after map rebuild: " + sv);
+							AP_ShowNews("Starting vehicle: " + sv);
+						} else {
+							AP_ERR("Starting vehicle '" + sv + "' not found in engine map!");
+						}
 					}
 				}
 			}
 
 			/* Apply starting cash bonus if configured */
-			if (_ap_pending_sd.starting_cash_bonus > 0 && c != nullptr && !is_reconnect) {
-				static const Money bonus_amounts[] = {
-					0, 50000LL, 200000LL, 500000LL, 2000000LL
-				};
-				int tier = std::clamp(_ap_pending_sd.starting_cash_bonus, 0, 4);
-				if (tier > 0) {
-					c->money += bonus_amounts[tier];
-					AP_ShowNews(fmt::format("Starting bonus: \xc2\xa3{} added to your account!",
-					    (long long)bonus_amounts[tier]));
-					AP_OK(fmt::format("Starting cash bonus tier {} = +\xc2\xa3{}",
-					    tier, (long long)bonus_amounts[tier]));
+			if (_ap_pending_sd.starting_cash_bonus && c != nullptr && apply_starting_grants) {
+				const Money bonus_amount = c->current_loan;
+				if (bonus_amount > 0) {
+					c->money += bonus_amount;
+					AP_RefreshMoneyDisplays();
+					AP_ShowNews("Starting bonus: +" + AP_FormatLocalCurrency(bonus_amount) + " (one loan).");
+					AP_OK("Starting cash bonus applied: +" + AP_FormatLocalCurrency(bonus_amount) + " (one loan)");
 				}
 			}
+
+			/* Apply starting cargo type unlock if configured (0=any, 1-9=specific cargo).
+			 * Indices must exactly match the Python StartingCargoType enum in options.py.
+			 * Note: Goods and Steel are excluded (secondary cargos) — valuables is index 9. */
+			if (_ap_pending_sd.starting_cargo_type > 0 && _ap_pending_sd.starting_cargo_type <= 9 && apply_starting_grants) {
+				static constexpr const char *CARGO_NAMES[] = {
+					"", "Passengers", "Mail", "Coal", "Oil", "Livestock",
+					"Grain", "Wood", "Iron Ore", "Valuables"
+				};
+				CargoType ct = AP_FindCargoType(CARGO_NAMES[_ap_pending_sd.starting_cargo_type]);
+				if (IsValidCargoType(ct)) {
+					_ap_unlocked_cargo_types[ct] = true;
+					AP_ApplyCargoWagonUnlocks(cid);
+					AP_ShowNews("Starting cargo unlocked: " + std::string(CARGO_NAMES[_ap_pending_sd.starting_cargo_type]));
+					AP_OK("Starting cargo type unlocked: " + std::string(CARGO_NAMES[_ap_pending_sd.starting_cargo_type]));
+					SetWindowClassesDirty(WC_ARCHIPELAGO);
+					_ap_status_dirty.store(true);
+				}
+			}
+
+			/* Populate hardcoded missions if none are provided by APWorld.
+			 * Covers all 11 AP cargo item names (matches CARGO_ITEM_NAMES in AP_OnItemReceived). */
+			if (_ap_pending_sd.missions.empty()) {
+				static constexpr const char *CARGO_NAMES_HC[] = {
+					"Passengers", "Mail", "Coal", "Oil", "Livestock", "Goods",
+					"Grain", "Wood", "Iron Ore", "Steel", "Valuables"
+				};
+				for (int i = 0; i < 11; i++) {
+					APMission m;
+					m.location = std::string("Collect: ") + CARGO_NAMES_HC[i];
+					m.description = std::string("Unlock the ") + CARGO_NAMES_HC[i] + " cargo type";
+					m.type = "collect_cargo";
+					m.cargo = CARGO_NAMES_HC[i];
+					m.unit = "";
+					m.amount = 1;
+					m.difficulty = "normal";
+					m.completed = false;
+					m.current_value = 0;
+					_ap_pending_sd.missions.push_back(m);
+				}
+				AP_OK(fmt::format("No missions in slot_data; populated {} hardcoded cargo-collection missions", _ap_pending_sd.missions.size()));
+			}
+
+			if (apply_starting_grants) _ap_starting_grants_applied_slot = _ap_last_slot;
 
 			/* Flush items that arrived before GM_NORMAL */
 			for (const APItem &item : _ap_pending_items) AP_OnItemReceived(item);
@@ -1732,16 +2073,13 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 		/* Mission checks run every ~1 s for snappier AP completion feedback.
 		 * Heavier maintenance (engine re-lock + economy stat accumulation)
-		 * remains every ~5 s. Win condition remains every ~10 s. */
+		 * and win condition remain every ~10 s. */
 		_ap_realtime_ticks++;
-
-		/* Tick down cooldowns every 250 ms */
-		if (_ap_death_cooldown_ticks > 0) _ap_death_cooldown_ticks--;
 
 		if (_ap_realtime_ticks % AP_MISSION_CHECK_TICKS == 0 &&
 		    _ap_session_started &&
 		    _game_mode == GM_NORMAL) {
-			/* Evaluate all incomplete missions frequently to reduce AP sync lag. */
+			/* Evaluate all incomplete missions every ~1 s for snappy AP completion feedback. */
 			CheckMissions();
 		}
 
@@ -1749,7 +2087,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		    _ap_session_started &&
 		    _game_mode == GM_NORMAL) {
 
-			/* Re-apply engine locks every ~5 s as a safety net against
+			/* Re-apply engine locks every ~10 s as a safety net against
 			 * OpenTTD's engine introduction system (StartupEngines/StartupOneEngine)
 			 * which runs on NewGRF changes and re-sets EngineFlag::Available and
 			 * company_avail for all engines whose intro_date has passed.
@@ -1760,9 +2098,20 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				const bool has_lock_list = !_ap_pending_sd.locked_vehicles.empty();
 				bool need_invalidate = false;
 				for (Engine *e : Engine::Iterate()) {
-					/* Wagons always stay available */
-					if (e->type == VEH_TRAIN &&
-						e->VehInfo<RailVehicleInfo>().railveh_type == RAILVEH_WAGON) continue;
+					if (AP_IsCargoWagonEngine(e)) {
+						const bool should_have = AP_ShouldWagonBeUnlockedForCargo(e);
+						if (should_have) {
+							if (!e->company_avail.Test(lock_cid)) {
+								e->flags.Set(EngineFlag::Available);
+								EnableEngineForCompany(e->index, lock_cid);
+								need_invalidate = true;
+							}
+						} else if (e->company_avail.Test(lock_cid)) {
+							e->company_avail.Reset(lock_cid);
+							need_invalidate = true;
+						}
+						continue;
+					}
 
 					/* If AP has explicitly unlocked this engine this session, leave it alone */
 					if (_ap_unlocked_engine_ids.count(e->index) > 0) continue;
@@ -1801,6 +2150,10 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 				Debug(misc, 0, "[AP] Win condition reached! Goal sent.");
 				AP_OK("*** WIN CONDITION REACHED! Goal sent to server! ***");
 				AP_ShowNews("WIN CONDITION REACHED! Goal sent to server!");
+				/* Show vanilla endgame screen immediately for the local slot that
+				 * actually reached its AP goal. In multiplayer this stays instance-
+				 * local because CheckWinCondition() uses each client's own AP state. */
+				ShowEndGameChart();
 			}
 		}
 	}

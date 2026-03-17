@@ -87,6 +87,7 @@
 #include <system_error>
 
 #include "table/strings.h"
+#include "archipelago.h"
 
 #ifdef __EMSCRIPTEN__
 #	include <emscripten.h>
@@ -1054,6 +1055,9 @@ void SwitchToMode(SwitchMode new_mode)
 
 	/* Transmit the survey if we were in normal-mode and not saving. It always means we leaving the current game. */
 	if (_game_mode == GM_NORMAL && new_mode != SM_SAVE_GAME) _survey.Transmit(NetworkSurveyHandler::Reason::LEAVE);
+
+	/* Leaving an active game: drop the Archipelago connection. */
+	if (_game_mode == GM_NORMAL && new_mode != SM_SAVE_GAME) AP_OnLeaveGame();
 
 	/* Keep track when we last switch mode. Used for survey, to know how long someone was in a game. */
 	if (new_mode != SM_SAVE_GAME) {

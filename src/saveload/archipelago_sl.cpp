@@ -108,8 +108,14 @@ extern std::string  _ap_last_pass;
 
 std::string  AP_GetCompletedMissionsStr();
 void         AP_SetCompletedMissionsStr(const std::string &s);
+std::string  AP_GetPurchasedShopLocationsStr();
+void         AP_SetPurchasedShopLocationsStr(const std::string &s);
 bool         AP_GetGoalSent();
 void         AP_SetGoalSent(bool v);
+std::string  AP_GetStartingGrantsAppliedSlot();
+void         AP_SetStartingGrantsAppliedSlot(const std::string &s);
+std::string  AP_GetProgressSlotIdentity();
+void         AP_SetProgressSlotIdentity(const std::string &s);
 void         AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out);
 void         AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in);
 std::string  AP_GetMaintainCountersStr();
@@ -138,7 +144,10 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "pass",  _ap_last_pass);
 
         KVSet(_ap_sl_blob, "completed",   AP_GetCompletedMissionsStr());
+        KVSet(_ap_sl_blob, "shop",        AP_GetPurchasedShopLocationsStr());
         KVSet(_ap_sl_blob, "goal_sent",   IStr(AP_GetGoalSent()));
+        KVSet(_ap_sl_blob, "starting_grants_slot", AP_GetStartingGrantsAppliedSlot());
+        KVSet(_ap_sl_blob, "progress_slot", AP_GetProgressSlotIdentity());
 
         constexpr int NC = 64;
         uint64_t cargo[NC] = {};
@@ -174,7 +183,31 @@ struct APSTChunkHandler : ChunkHandler {
             _ap_last_slot = KVGet(_ap_sl_blob, "slot");
             _ap_last_pass = KVGet(_ap_sl_blob, "pass");
 
+            const std::string expected_progress_slot = _ap_last_host.empty() || _ap_last_slot.empty()
+                ? std::string()
+                : fmt::format("{}:{}|{}", _ap_last_host, _ap_last_port, _ap_last_slot);
+            const std::string loaded_progress_slot = KVGet(_ap_sl_blob, "progress_slot");
+            const bool progress_slot_matches = loaded_progress_slot.empty() || loaded_progress_slot == expected_progress_slot;
+
+            AP_SetProgressSlotIdentity(expected_progress_slot);
+
+            if (!progress_slot_matches) {
+                AP_SetCompletedMissionsStr("");
+                AP_SetPurchasedShopLocationsStr("");
+                AP_SetGoalSent(false);
+                AP_SetStartingGrantsAppliedSlot("");
+
+                constexpr int NC = 64;
+                uint64_t cargo[NC] = {};
+                AP_SetCumulStats(cargo, NC, 0);
+                AP_SetMaintainCountersStr("");
+                AP_SetNamedEntityStr("");
+                return;
+            }
+
             AP_SetCompletedMissionsStr(KVGet(_ap_sl_blob, "completed"));
+            AP_SetPurchasedShopLocationsStr(KVGet(_ap_sl_blob, "shop"));
+            AP_SetStartingGrantsAppliedSlot(KVGet(_ap_sl_blob, "starting_grants_slot"));
 
             auto getint = [&](const std::string &key) -> int {
                 return ParseInt(KVGet(_ap_sl_blob, key, "0"));

@@ -39,6 +39,7 @@
 #include "waypoint_cmd.h"
 #include "road_cmd.h"
 #include "tunnelbridge_cmd.h"
+#include "archipelago.h"
 #include "newgrf_badge_gui.h"
 #include "newgrf_roadstop.h"
 #include "picker_gui.h"
@@ -391,11 +392,21 @@ struct BuildRoadToolbarWindow : Window {
 			WID_ROT_BUILD_WAYPOINT,
 			WID_ROT_BUS_STATION,
 			WID_ROT_TRUCK_STATION);
+		bool can_build_depot = can_build && AP_IsRoadVehicleUnlocked();
+		bool can_build_station = can_build && AP_IsRoadVehicleUnlocked();
+		this->SetWidgetDisabledState(WID_ROT_DEPOT, !can_build_depot);
+		this->SetWidgetDisabledState(WID_ROT_BUS_STATION, !can_build_station);
+		this->SetWidgetDisabledState(WID_ROT_TRUCK_STATION, !can_build_station);
 		if (!can_build) {
 			CloseWindowById(WC_BUS_STATION, TRANSPORT_ROAD);
 			CloseWindowById(WC_TRUCK_STATION, TRANSPORT_ROAD);
 			CloseWindowById(WC_BUILD_DEPOT, TRANSPORT_ROAD);
 			CloseWindowById(WC_BUILD_WAYPOINT, TRANSPORT_ROAD);
+		} else if (!can_build_depot) {
+			CloseWindowById(WC_BUILD_DEPOT, TRANSPORT_ROAD);
+		} else if (!can_build_station) {
+			CloseWindowById(WC_BUS_STATION, TRANSPORT_ROAD);
+			CloseWindowById(WC_TRUCK_STATION, TRANSPORT_ROAD);
 		}
 
 		if (_game_mode != GM_EDITOR) {
@@ -406,10 +417,10 @@ struct BuildRoadToolbarWindow : Window {
 				this->GetWidget<NWidgetCore>(WID_ROT_BUS_STATION)->SetToolTip(STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
 				this->GetWidget<NWidgetCore>(WID_ROT_TRUCK_STATION)->SetToolTip(STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
 			} else {
-				this->GetWidget<NWidgetCore>(WID_ROT_DEPOT)->SetToolTip(rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_BUILD_ROAD_VEHICLE_DEPOT : STR_ROAD_TOOLBAR_TOOLTIP_BUILD_TRAM_VEHICLE_DEPOT);
+				this->GetWidget<NWidgetCore>(WID_ROT_DEPOT)->SetToolTip(can_build_depot ? (rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_BUILD_ROAD_VEHICLE_DEPOT : STR_ROAD_TOOLBAR_TOOLTIP_BUILD_TRAM_VEHICLE_DEPOT) : STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
 				this->GetWidget<NWidgetCore>(WID_ROT_BUILD_WAYPOINT)->SetToolTip(rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_CONVERT_ROAD_TO_WAYPOINT : STR_ROAD_TOOLBAR_TOOLTIP_CONVERT_TRAM_TO_WAYPOINT);
-				this->GetWidget<NWidgetCore>(WID_ROT_BUS_STATION)->SetToolTip(rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_BUILD_BUS_STATION : STR_ROAD_TOOLBAR_TOOLTIP_BUILD_PASSENGER_TRAM_STATION);
-				this->GetWidget<NWidgetCore>(WID_ROT_TRUCK_STATION)->SetToolTip(rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_BUILD_TRUCK_LOADING_BAY : STR_ROAD_TOOLBAR_TOOLTIP_BUILD_CARGO_TRAM_STATION);
+				this->GetWidget<NWidgetCore>(WID_ROT_BUS_STATION)->SetToolTip(can_build_station ? (rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_BUILD_BUS_STATION : STR_ROAD_TOOLBAR_TOOLTIP_BUILD_PASSENGER_TRAM_STATION) : STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
+				this->GetWidget<NWidgetCore>(WID_ROT_TRUCK_STATION)->SetToolTip(can_build_station ? (rtt == RTT_ROAD ? STR_ROAD_TOOLBAR_TOOLTIP_BUILD_TRUCK_LOADING_BAY : STR_ROAD_TOOLBAR_TOOLTIP_BUILD_CARGO_TRAM_STATION) : STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
 			}
 		}
 	}

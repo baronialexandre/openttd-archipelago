@@ -2,6 +2,8 @@
 
 A full [Archipelago](https://archipelago.gg) multiworld randomizer integration for **OpenTTD 15.2**.
 
+This project began as a fork of solida1987's OpenTTD Archipelago implementation. It started as a feature fork and later evolved into a separate design direction maintained in this repository.
+
 All 202 vanilla vehicles are locked at game start and randomized into the multiworld item pool. Complete procedurally generated missions to send checks. Receive vehicles, cash injections, cargo bonuses — or suffer traps like Recession, Breakdown Wave, and forced Bank Loans sent by other players.
 
 > **Status: Beta** — Core gameplay is complete and stable. See [Known Limitations](#known-limitations).
@@ -119,4 +121,5 @@ OpenTTD is copyright © the OpenTTD contributors. See [COPYING.md](COPYING.md) f
 
 - **OpenTTD** — the base game, [openttd.org](https://www.openttd.org)
 - **Archipelago** — the multiworld randomizer framework, [archipelago.gg](https://archipelago.gg)
-- Archipelago integration developed by [solida1987](https://github.com/solida1987)
+- Original OpenTTD Archipelago implementation by [solida1987](https://github.com/solida1987)
+- OpenTTD Cargolock fork and ongoing development by this repository's maintainers

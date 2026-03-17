@@ -384,6 +384,7 @@ static constexpr std::initializer_list<NWidgetPart> _nested_select_game_widgets 
 
 			/* Single player */
 			NWidget(NWID_VERTICAL), SetPIP(0, WidgetDimensions::unscaled.vsep_normal, 0),
+				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_ARCHIPELAGO), SetToolbarMinimalSize(1), SetSpriteStringTip((SpriteID)712 /* AP: slot 712 replaced by archipelago_icons.grf */, STR_INTRO_ARCHIPELAGO, STR_INTRO_TOOLTIP_ARCHIPELAGO), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
 				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_GENERATE_GAME), SetToolbarMinimalSize(1), SetSpriteStringTip(SPR_IMG_LANDSCAPING, STR_INTRO_NEW_GAME, STR_INTRO_TOOLTIP_NEW_GAME), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
 				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_PLAY_HEIGHTMAP), SetToolbarMinimalSize(1), SetSpriteStringTip(SPR_IMG_SHOW_COUNTOURS, STR_INTRO_PLAY_HEIGHTMAP, STR_INTRO_TOOLTIP_PLAY_HEIGHTMAP), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
 				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_PLAY_SCENARIO), SetToolbarMinimalSize(1), SetSpriteStringTip(SPR_IMG_SUBSIDIES, STR_INTRO_PLAY_SCENARIO, STR_INTRO_TOOLTIP_PLAY_SCENARIO), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
@@ -420,10 +421,6 @@ static constexpr std::initializer_list<NWidgetPart> _nested_select_game_widgets 
 				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WID_SGI_EXIT), SetToolbarMinimalSize(1), SetStringTip(STR_INTRO_QUIT, STR_INTRO_TOOLTIP_QUIT),
 			EndContainer(),
 
-			/* Archipelago multiworld randomizer */
-			NWidget(NWID_VERTICAL),
-				NWidget(WWT_PUSHIMGTEXTBTN, COLOUR_ORANGE, WID_SGI_ARCHIPELAGO), SetToolbarMinimalSize(1), SetSpriteStringTip((SpriteID)712 /* AP: slot 712 replaced by archipelago_icons.grf */, STR_INTRO_ARCHIPELAGO, STR_INTRO_TOOLTIP_ARCHIPELAGO), SetAlignment(SA_LEFT | SA_VERT_CENTER), SetFill(1, 0),
-			EndContainer(),
 		EndContainer(),
 	EndContainer(),
 };

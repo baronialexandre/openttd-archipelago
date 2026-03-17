@@ -20,6 +20,8 @@
 #include <map>
 #include <set>
 
+enum Colours : uint8_t;
+
 /** Connection states for the Archipelago client. */
 enum class APState : uint8_t {
 	DISCONNECTED,
@@ -66,6 +68,12 @@ struct APMission {
 	APNamedEntity named_entity;
 };
 
+struct APShopLocation {
+	std::string location;
+	std::string name;
+	int64_t     cost = 0;
+};
+
 /** Full configuration received from the AP server after authentication. */
 struct APSlotData {
 	std::string             game_version;
@@ -91,22 +99,23 @@ struct APSlotData {
 	uint8_t                 number_towns         = 2;  ///< 0=very low..3=high
 	uint8_t                 industry_density     = 4;  ///< 0=fund only,1=minimal,2=very low,3=low,4=normal,5=high
 
-	/* ── Death Link ─────────────────────────────────────────────────── */
-	bool                    death_link           = false;
-
 	/* ── Difficulty / balance ───────────────────────────────────────── */
-	int                     starting_cash_bonus  = 0;   ///< 0=none 1=50k 2=200k 3=500k 4=2M
+	bool                    starting_cash_bonus  = false; ///< false=off, true=grant one full starting-loan amount
+	bool                    enable_shop         = true;
+	int                     shop_tiers          = 5;
 
 	/* ── NewGRF options ─────────────────────────────────────────────── */
 	bool                    enable_iron_horse    = false;
 
 	/* ── New apworld (v0.1.0+) ──────────────────────────────────────── */
-	int                     starting_cargo_type  = 0;   ///< 0=any,1=Passengers,2=Mail,3=Coal,4=Oil,5=Livestock,6=Grain,7=Wood,8=IronOre,9=Valuables
+	int                     starting_cargo_type  = 0;   ///< 0=any, 1=Passengers, 2=Mail, 3=Coal, 4=Oil, 5=Livestock, 6=Grain, 7=Wood, 8=IronOre, 9=Valuables (matches Python StartingCargoType; Goods/Steel excluded)
 
 	/** Maps item_id -> item_name, sent in slot_data by APWorld. */
 	std::map<int64_t, std::string> item_id_to_name;
 	/** Maps location_name -> location_id, sent in slot_data by APWorld. */
 	std::map<std::string, int64_t> location_name_to_id;
+	/** Location IDs already checked for this slot, sent by AP server on connect. */
+	std::set<int64_t> checked_locations;
 
 	/** Vehicle item names that should be locked at session start.
 	 *  Only engines whose English name is in this set will be locked.
@@ -115,6 +124,7 @@ struct APSlotData {
 	std::set<std::string> locked_vehicles;
 
 	std::vector<APMission>  missions;
+	std::vector<APShopLocation> shop_locations;
 };
 
 /** Message colour categories derived from AP PrintJSON parts. */
@@ -140,9 +150,8 @@ struct APCallbacks {
 	std::function<void(const APItem &)>      on_item_received;
 	std::function<void(const std::string &, APPrintColour)> on_print;
 	std::function<void(const APSlotData &)>  on_slot_data;
-	/** Fired when a Death Link bounce arrives from another player.
-	 *  @param source  The slot name that sent the death. */
-	std::function<void(const std::string &source)> on_death_received;
+	/** Fired when RoomUpdate brings new checked_locations (e.g. from a co-client). */
+	std::function<void()> on_locations_updated;
 };
 
 /** Archipelago WebSocket client. Networking runs in a background thread. */
@@ -168,10 +177,6 @@ public:
 
 	/** Send a chat/command message to the AP server (e.g. "!hint item"). */
 	void SendSay(const std::string &text);
-
-	/** Send a Death Link bounce packet to the server.
-	 *  @param cause Short human-readable description, e.g. "Train crash". */
-	void SendDeath(const std::string &cause);
 
 	/** Returns the "player (game)" hint label for a location, or "" if not yet resolved. */
 	std::string GetLocationHint(const std::string &location_name) const {
@@ -224,7 +229,7 @@ private:
 	std::atomic<int64_t> items_received_index{ 0 }; ///< High-water mark of AP item indices processed; persists across reconnects
 
 	struct InboundEvent {
-		enum Type : uint8_t { CONNECTED, DISCONNECTED, ITEM, PRINT, SLOT_DATA, DEATH_RECEIVED } type;
+		enum Type : uint8_t { CONNECTED, DISCONNECTED, ITEM, PRINT, SLOT_DATA, LOCATIONS_UPDATED } type;
 		std::string text;
 		APPrintColour colour = APPrintColour::DEFAULT;
 		APItem      item;
@@ -269,11 +274,27 @@ bool AP_IsRoadVehicleUnlocked();
 bool AP_IsAircraftUnlocked();
 bool AP_IsShipUnlocked();
 
+/** Returns true when a company colour is unlocked by AP items. */
+bool AP_IsCompanyColourUnlocked(Colours colour);
+
+/** Shop state accessors. */
+int  AP_GetVisibleShopLocationCount();
+bool AP_IsShopLocationPurchased(const std::string &location_name);
+bool AP_PurchaseShopLocation(const std::string &location_name);
+std::string AP_GetPurchasedShopLocationsStr();
+void AP_SetPurchasedShopLocationsStr(const std::string &s);
+
 /** Forward a text/command string to the AP server (Say packet). */
 void AP_SendSay(const std::string &text);
 
 /** Register the "ap" console command. Call once at startup. */
 void AP_RegisterConsoleCommands();
+
+/**
+ * Called when the player exits a game (to menu, new game, load, etc.).
+ * Disconnects from Archipelago and resets per-session state.
+ */
+void AP_OnLeaveGame();
 
 /**
  * Set menu connect behavior:

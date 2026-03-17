@@ -1,5 +1,7 @@
 # Changelog — OpenTTD Archipelago
 
+Project note: this codebase began as a fork of solida1987's OpenTTD Archipelago implementation and now tracks its own feature and design direction.
+
 ## [1.0.0-beta6] — 2026-03-07
 
 ### Added

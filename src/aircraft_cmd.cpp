@@ -11,7 +11,6 @@
  */
 
 #include "stdafx.h"
-#include "archipelago_gui.h"  /* AP_SendDeath() */
 #include "aircraft.h"
 #include "landscape.h"
 #include "news_func.h"
@@ -1376,11 +1375,6 @@ static void CrashAirplane(Aircraft *v)
 
 	ModifyStationRatingAround(vt, v->owner, -160, 30);
 	if (_settings_client.sound.disaster) SndPlayVehicleFx(SND_12_EXPLOSION, v);
-
-	/* Archipelago Death Link */
-	if (v->owner == _local_company) {
-		AP_SendDeath("Aircraft crash");
-	}
 }
 
 /**

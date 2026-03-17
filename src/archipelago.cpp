@@ -335,6 +335,7 @@ void ArchipelagoClient::Disconnect()
 {
 	stop_requested.store(true);
 	if (worker_thread.joinable()) worker_thread.join();
+	has_slot_data.store(false);
 	state.store(APState::DISCONNECTED);
 }
 
@@ -370,27 +371,6 @@ void ArchipelagoClient::SendSay(const std::string &text)
 	outbound_queue.push_back({ pkt.dump() });
 }
 
-void ArchipelagoClient::SendDeath(const std::string &cause)
-{
-	/* Death Link uses a Bounce packet with a data payload.
-	 * Protocol: {"cmd":"Bounce","data":{"type":"DeathLink","time":<unix>,"source":"<slot>","cause":"<cause>"}} */
-	double now = std::chrono::duration<double>(
-		std::chrono::system_clock::now().time_since_epoch()).count();
-	json pkt = json::array();
-	pkt.push_back({
-		{"cmd",  "Bounce"},
-		{"tags", json::array({"DeathLink"})},
-		{"data", {
-			{"type",   "DeathLink"},
-			{"time",   now},
-			{"source", slot_name},
-			{"cause",  cause}
-		}}
-	});
-	std::lock_guard<std::mutex> lg(outbound_mutex);
-	outbound_queue.push_back({ pkt.dump() });
-}
-
 void ArchipelagoClient::Tick()
 {
 	std::lock_guard<std::mutex> lg(inbound_mutex);
@@ -422,9 +402,8 @@ void ArchipelagoClient::Tick()
 				if (callbacks.on_slot_data) callbacks.on_slot_data(ev.slot);
 				else AP_ERR("[Tick] on_slot_data callback is NULL!");
 				break;
-			case InboundEvent::DEATH_RECEIVED:
-				AP_LOG(fmt::format("[Tick] Dispatching DEATH_RECEIVED from {}", ev.text));
-				if (callbacks.on_death_received) callbacks.on_death_received(ev.text);
+			case InboundEvent::LOCATIONS_UPDATED:
+				if (callbacks.on_locations_updated) callbacks.on_locations_updated();
 				break;
 		}
 	}
@@ -472,8 +451,6 @@ static APSlotData ParseSlotData(const json &msg)
 	if (sd.starting_vehicles.empty() && !sd.starting_vehicle.empty()) {
 		sd.starting_vehicles.push_back(sd.starting_vehicle);
 	}
-	/* New apworld: starting cargo type int (0=any, 1-9 = specific cargo) */
-	sd.starting_cargo_type  = d.value("starting_cargo_type", 0);
 	sd.enable_traps         = d.value("enable_traps", true);
 	sd.start_year           = d.value("start_year", 1950);
 
@@ -492,13 +469,13 @@ static APSlotData ParseSlotData(const json &msg)
 	sd.town_name            = (uint8_t)d.value("town_name", 0);
 	sd.number_towns         = (uint8_t)d.value("number_towns", 2);
 	sd.industry_density     = (uint8_t)d.value("industry_density", 4);
-
-	/* Death Link — from options.py; note: AP sends this as a top-level slot_data field */
-	sd.death_link                = d.value("death_link",           false);
-	sd.starting_cash_bonus       = d.value("starting_cash_bonus",  0);
+	sd.starting_cash_bonus       = d.value("starting_cash_bonus",  false);
 
 	/* NewGRF options */
 	sd.enable_iron_horse         = (bool)d.value("enable_iron_horse", 0);
+
+	/* Starting cargo type (0=any, 1-9=specific cargo, matching Python StartingCargoType enum) */
+	sd.starting_cargo_type       = d.value("starting_cargo_type", 0);
 
 	/* Verbose log — visible in OpenTTD debug console (press ~ in game) */
 	Debug(misc, 0, "[AP] SlotData: version={} missions={} start_year={} vehicle='{}'",
@@ -540,6 +517,13 @@ static APSlotData ParseSlotData(const json &msg)
 		Debug(misc, 0, "[AP] SlotData: {} locked_vehicles loaded", sd.locked_vehicles.size());
 	}
 
+	if (d.contains("enable_shop") && d["enable_shop"].is_boolean()) {
+		sd.enable_shop = d["enable_shop"].get<bool>();
+	}
+	if (d.contains("shop_tiers") && d["shop_tiers"].is_number_integer()) {
+		sd.shop_tiers = d["shop_tiers"].get<int>();
+	}
+
 	/* Parse missions array */
 	if (d.contains("missions") && d["missions"].is_array()) {
 		for (const auto &m : d["missions"]) {
@@ -556,6 +540,16 @@ static APSlotData ParseSlotData(const json &msg)
 			if (!mission.location.empty()) {
 				sd.missions.push_back(std::move(mission));
 			}
+		}
+	}
+
+	if (d.contains("shop_locations") && d["shop_locations"].is_array()) {
+		for (const auto &shop : d["shop_locations"]) {
+			APShopLocation entry;
+			entry.location = shop.value("location", "");
+			entry.name     = shop.value("name", "");
+			entry.cost     = shop.value("cost", (int64_t)0);
+			if (!entry.location.empty()) sd.shop_locations.push_back(std::move(entry));
 		}
 	}
 
@@ -905,6 +899,12 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			state.store(APState::AUTHENTICATED);
 
 			APSlotData sd = ParseSlotData(msg);
+			if (msg.contains("checked_locations") && msg["checked_locations"].is_array()) {
+				for (const auto &idv : msg["checked_locations"]) {
+					if (idv.is_number_integer()) sd.checked_locations.insert(idv.get<int64_t>());
+				}
+				AP_LOG(fmt::format("Connected: {} checked locations restored", sd.checked_locations.size()));
+			}
 			{
 				std::lock_guard<std::mutex> lg(slot_mutex);
 				slot_data = sd;
@@ -1129,18 +1129,27 @@ void ArchipelagoClient::ProcessAPMessage(const std::string &text)
 			}
 			if (!text_out.empty()) PushEvent({ InboundEvent::PRINT, text_out, msg_colour, {}, {} });
 
-		} else if (cmd == "Bounce") {
-			/* Death Link uses Bounce packets with data.type == "DeathLink" */
-			if (msg.contains("data") && msg["data"].is_object()) {
-				std::string dtype = msg["data"].value("type", "");
-				if (dtype == "DeathLink") {
-					std::string source = msg["data"].value("source", "unknown");
-					/* Don't receive our own deaths back */
-					if (source != slot_name) {
-						PushEvent({ InboundEvent::DEATH_RECEIVED, source, {}, {} });
+		} else if (cmd == "RoomUpdate") {
+			/* Sent when another client for this slot checks locations.
+			 * Merge the new locations into our slot_data so completion %
+			 * and shop purchased state reflect them without a reconnect. */
+			if (msg.contains("checked_locations") && msg["checked_locations"].is_array()) {
+				size_t added = 0;
+				{
+					std::lock_guard<std::mutex> lg(slot_mutex);
+					for (const auto &idv : msg["checked_locations"]) {
+						if (idv.is_number_integer()) {
+							if (slot_data.checked_locations.insert(idv.get<int64_t>()).second)
+								++added;
+						}
 					}
 				}
+				if (added > 0) {
+					AP_LOG(fmt::format("RoomUpdate: {} new checked location(s) merged", added));
+					PushEvent({ InboundEvent::LOCATIONS_UPDATED, {}, {}, {}, {} });
+				}
 			}
+
 		}
 	}
 }

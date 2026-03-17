@@ -32,6 +32,7 @@
 #include "command_func.h"
 #include "airport_cmd.h"
 #include "station_cmd.h"
+#include "archipelago.h"
 #include "zoom_func.h"
 #include "timer/timer.h"
 #include "timer/timer_game_calendar.h"
@@ -110,8 +111,9 @@ struct BuildAirToolbarWindow : Window {
 		if (!gui_scope) return;
 
 		bool can_build = CanBuildVehicleInfrastructure(VEH_AIRCRAFT);
-		this->SetWidgetDisabledState(WID_AT_AIRPORT, !can_build);
-		if (!can_build) {
+		bool can_build_airport = can_build && AP_IsAircraftUnlocked();
+		this->SetWidgetDisabledState(WID_AT_AIRPORT, !can_build_airport);
+		if (!can_build_airport) {
 			CloseWindowById(WC_BUILD_STATION, TRANSPORT_AIR);
 
 			/* Show in the tooltip why this button is disabled. */

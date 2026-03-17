@@ -30,5 +30,6 @@ int8_t SaveHighScoreValue(const Company *c);
 int8_t SaveHighScoreValueNetwork();
 StringID EndGameGetPerformanceTitleFromValue(uint value);
 void ShowHighscoreTable(int difficulty = SP_CUSTOM, int8_t rank = -1);
+void ShowEndGameChart();
 
 #endif /* HIGHSCORE_H */

@@ -39,6 +39,7 @@
 #include "tunnelbridge_cmd.h"
 #include "waypoint_cmd.h"
 #include "rail_cmd.h"
+#include "archipelago.h"
 #include "timer/timer.h"
 #include "timer/timer_game_calendar.h"
 #include "picker_gui.h"
@@ -477,12 +478,27 @@ struct BuildRailToolbarWindow : Window {
 
 		bool can_build = CanBuildVehicleInfrastructure(VEH_TRAIN);
 		for (const WidgetID widget : can_build_widgets) this->SetWidgetDisabledState(widget, !can_build);
+		bool can_build_depot = can_build && AP_IsTrainUnlocked();
+		bool can_build_station = can_build && AP_IsTrainUnlocked();
+		this->SetWidgetDisabledState(WID_RAT_BUILD_DEPOT, !can_build_depot);
+		this->SetWidgetDisabledState(WID_RAT_BUILD_STATION, !can_build_station);
 		if (!can_build) {
 			CloseWindowById(WC_BUILD_SIGNAL, TRANSPORT_RAIL);
 			CloseWindowById(WC_BUILD_STATION, TRANSPORT_RAIL);
 			CloseWindowById(WC_BUILD_DEPOT, TRANSPORT_RAIL);
 			CloseWindowById(WC_BUILD_WAYPOINT, TRANSPORT_RAIL);
 			CloseWindowById(WC_SELECT_STATION, 0);
+		} else if (!can_build_depot) {
+			CloseWindowById(WC_BUILD_DEPOT, TRANSPORT_RAIL);
+		} else if (!can_build_station) {
+			CloseWindowById(WC_BUILD_STATION, TRANSPORT_RAIL);
+		}
+
+		if (_game_mode != GM_EDITOR) {
+			this->GetWidget<NWidgetCore>(WID_RAT_BUILD_DEPOT)->SetToolTip(
+				can_build_depot ? STR_RAIL_TOOLBAR_TOOLTIP_BUILD_TRAIN_DEPOT_FOR_BUILDING : STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
+			this->GetWidget<NWidgetCore>(WID_RAT_BUILD_STATION)->SetToolTip(
+				can_build_station ? STR_RAIL_TOOLBAR_TOOLTIP_BUILD_RAILROAD_STATION : STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
 		}
 	}
 

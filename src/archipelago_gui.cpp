@@ -10,6 +10,7 @@
 #include "core/string_consumer.hpp"
 #include "archipelago.h"
 #include "archipelago_gui.h"
+#include "company_func.h"
 #include "gui.h"
 #include "window_gui.h"
 #include "window_func.h"
@@ -37,19 +38,15 @@ enum APWidgets : WidgetID {
 	WAPGUI_EDIT_SLOT,
 	WAPGUI_LABEL_PASS,
 	WAPGUI_EDIT_PASS,
+	WAPGUI_SEL_MENU_OPTIONS,
+	WAPGUI_LABEL_MULT,
 	WAPGUI_STATUS,
 	WAPGUI_SLOT_INFO,
+	WAPGUI_CHECKBOX_MULT,
 	WAPGUI_SEL_ACTIONS,
 	WAPGUI_BTN_CONNECT_MENU,
 	WAPGUI_BTN_CONNECT_INGAME,
 	WAPGUI_BTN_DISCONNECT_INGAME,
-};
-
-enum APPlayModeWidgets : WidgetID {
-	WAPPM_TEXT,
-	WAPPM_BTN_SINGLE,
-	WAPPM_BTN_MULTI,
-	WAPPM_BTN_CANCEL,
 };
 
 enum APStartFlowWidgets : WidgetID {
@@ -79,8 +76,15 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_PASS), SetStringTip(STR_ARCHIPELAGO_LABEL_PASS), SetMinimalSize(80, 14),
 				NWidget(WWT_EDITBOX, COLOUR_GREY, WAPGUI_EDIT_PASS), SetStringTip(STR_EMPTY), SetMinimalSize(200, 14), SetFill(1, 0),
 			EndContainer(),
-			NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_STATUS),    SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
-			NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_SLOT_INFO), SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(NWID_SELECTION, INVALID_COLOUR, WAPGUI_SEL_MENU_OPTIONS),
+				NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
+					NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_LABEL_MULT), SetStringTip(STR_EMPTY), SetMinimalSize(260, 14), SetFill(1, 0),
+					NWidget(WWT_BOOLBTN, COLOUR_GREY, WAPGUI_CHECKBOX_MULT), SetStringTip(STR_EMPTY), SetMinimalSize(18, 14), SetFill(0, 0),
+				EndContainer(),
+				NWidget(NWID_HORIZONTAL),
+					NWidget(WWT_EMPTY, INVALID_COLOUR), SetMinimalSize(0, 0), SetFill(1, 0),
+				EndContainer(),
+			EndContainer(),
 			NWidget(NWID_SELECTION, INVALID_COLOUR, WAPGUI_SEL_ACTIONS),
 				NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
 					NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPGUI_BTN_CONNECT_MENU), SetStringTip(STR_ARCHIPELAGO_BTN_CONNECT), SetMinimalSize(220, 14), SetFill(1, 0),
@@ -90,24 +94,8 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_widgets = {
 					NWidget(WWT_PUSHTXTBTN, COLOUR_RED,   WAPGUI_BTN_DISCONNECT_INGAME), SetStringTip(STR_ARCHIPELAGO_BTN_DISCONNECT), SetMinimalSize(108, 14), SetFill(1, 0),
 				EndContainer(),
 			EndContainer(),
-		EndContainer(),
-	EndContainer(),
-	NWidget(WWT_RESIZEBOX, COLOUR_GREY),
-};
-
-static constexpr std::initializer_list<NWidgetPart> _nested_ap_play_mode_widgets = {
-	NWidget(NWID_HORIZONTAL),
-		NWidget(WWT_CLOSEBOX, COLOUR_BROWN),
-		NWidget(WWT_CAPTION, COLOUR_BROWN), SetStringTip(STR_ARCHIPELAGO_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS), SetFill(1, 0), SetResize(1, 0),
-	EndContainer(),
-	NWidget(WWT_PANEL, COLOUR_BROWN), SetResize(1, 1),
-		NWidget(NWID_VERTICAL), SetPIP(4, 4, 4), SetPadding(6),
-			NWidget(WWT_TEXT, INVALID_COLOUR, WAPPM_TEXT), SetMinimalSize(320, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
-			NWidget(NWID_HORIZONTAL), SetPIP(0, 4, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN,  WAPPM_BTN_SINGLE), SetStringTip(STR_EMPTY, STR_INTRO_TOOLTIP_NEW_GAME), SetMinimalSize(102, 14), SetFill(1, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_ORANGE, WAPPM_BTN_MULTI),  SetStringTip(STR_EMPTY, STR_INTRO_TOOLTIP_MULTIPLAYER), SetMinimalSize(102, 14), SetFill(1, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_GREY,   WAPPM_BTN_CANCEL), SetStringTip(STR_EMPTY, STR_NULL), SetMinimalSize(102, 14), SetFill(1, 0),
-			EndContainer(),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_STATUS),    SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
+				NWidget(WWT_TEXT, INVALID_COLOUR, WAPGUI_SLOT_INFO), SetMinimalSize(284, 14), SetFill(1, 0), SetStringTip(STR_EMPTY),
 		EndContainer(),
 	EndContainer(),
 };
@@ -130,7 +118,6 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_start_flow_widget
 };
 
 struct ArchipelagoConnectWindow;
-static void ShowAPPlayModeChoiceWindow();
 static void ShowAPStartFlowChoiceWindow();
 
 struct ArchipelagoConnectWindow : public Window {
@@ -140,11 +127,13 @@ struct ArchipelagoConnectWindow : public Window {
 	std::string server_str, slot_str, pass_str;
 	APState  last_state  = APState::DISCONNECTED;
 	bool     last_has_sd = false;
+	int      last_checked_locations = -1;
+	int      last_total_locations = -1;
 	bool     menu_multiplayer_mode = false;
 
 	static std::string StatusStr(APState s, bool has_sd, const std::string &err) {
 		switch (s) {
-			case APState::DISCONNECTED:   return "Not connected.";
+			case APState::DISCONNECTED:   return "";
 			case APState::CONNECTING:     return "Connecting...";
 			case APState::CONNECTED:      return "Authenticating...";
 			case APState::AUTHENTICATING: return "Authenticating...";
@@ -157,18 +146,23 @@ struct ArchipelagoConnectWindow : public Window {
 	static std::string SlotInfoStr(bool has_sd) {
 		if (!has_sd || _ap_client == nullptr) return "";
 		APSlotData sd = _ap_client->GetSlotData();
-		return "Missions: " + fmt::format("{}", sd.missions.size());
+
+		int total_locations = 0;
+		int checked_locations = 0;
+		for (const auto &[name, location_id] : sd.location_name_to_id) {
+			(void)name;
+			total_locations++;
+			if (sd.checked_locations.count(location_id) != 0) checked_locations++;
+		}
+
+		if (total_locations <= 0) return "Completion: 0% (0/0)";
+		const int percent = (checked_locations * 100) / total_locations;
+		return fmt::format("Completion: {}% ({}/{})", percent, checked_locations, total_locations);
 	}
 
 	void StartConnection(bool start_new_mode)
 	{
 		if (_ap_client == nullptr) return;
-
-		/* In multiplayer, only the host/server may own the AP connection. */
-		if (_networking && !_network_server) {
-			AP_ShowConsole("[AP] Multiplayer client mode: only the host can connect to Archipelago.");
-			return;
-		}
 
 		AP_SetMenuConnectMultiplayer(this->menu_multiplayer_mode);
 		AP_SetMenuConnectStartNew(start_new_mode);
@@ -235,15 +229,36 @@ struct ArchipelagoConnectWindow : public Window {
 
 	void OnGameTick() override {
 		if (_ap_client == nullptr) return;
+
 		APState s = _ap_client->GetState();
 		bool    h = _ap_client->HasSlotData();
-		if (s != last_state || h != last_has_sd) { last_state = s; last_has_sd = h; this->SetDirty(); }
+		int checked_locations = -1;
+		int total_locations = -1;
+		if (h) {
+			APSlotData sd = _ap_client->GetSlotData();
+			total_locations = (int)sd.location_name_to_id.size();
+			checked_locations = 0;
+			for (const auto &[name, location_id] : sd.location_name_to_id) {
+				(void)name;
+				if (sd.checked_locations.count(location_id) != 0) checked_locations++;
+			}
+		}
+		if (s != last_state || h != last_has_sd || checked_locations != last_checked_locations || total_locations != last_total_locations) {
+			last_state = s;
+			last_has_sd = h;
+			last_checked_locations = checked_locations;
+			last_total_locations = total_locations;
+			this->SetDirty();
+		}
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override {
 		if (_ap_client == nullptr) return;
 		const int text_y = r.top + std::max(0, ((int)r.Height() - GetCharacterHeight(FS_NORMAL)) / 2);
 		switch (widget) {
+				case WAPGUI_LABEL_MULT:
+					DrawString(r.left, r.right, text_y, "Host multiplayer server", TC_BLACK);
+					break;
 			case WAPGUI_STATUS:
 				DrawString(r.left, r.right, r.top,
 				    StatusStr(_ap_client->GetState(), _ap_client->HasSlotData(), _ap_client->GetLastError()),
@@ -264,7 +279,10 @@ struct ArchipelagoConnectWindow : public Window {
 
 	void OnPaint() override
 	{
-		this->GetWidget<NWidgetStacked>(WAPGUI_SEL_ACTIONS)->SetDisplayedPlane(_game_mode == GM_MENU ? 0 : 1);
+		const bool in_menu = _game_mode == GM_MENU;
+		this->GetWidget<NWidgetStacked>(WAPGUI_SEL_MENU_OPTIONS)->SetDisplayedPlane(in_menu ? 0 : 1);
+		this->GetWidget<NWidgetStacked>(WAPGUI_SEL_ACTIONS)->SetDisplayedPlane(in_menu ? 0 : 1);
+		this->SetWidgetLoweredState(WAPGUI_CHECKBOX_MULT, this->menu_multiplayer_mode);
 		this->DrawWidgets();
 	}
 
@@ -274,7 +292,7 @@ struct ArchipelagoConnectWindow : public Window {
 			case WAPGUI_BTN_CONNECT_INGAME: {
 				if (_ap_client == nullptr) break;
 				if (_game_mode == GM_MENU) {
-					ShowAPPlayModeChoiceWindow();
+					ShowAPStartFlowChoiceWindow();
 				} else {
 					/* In an active game, reconnect should never trigger world generation. */
 					this->menu_multiplayer_mode = _networking;
@@ -282,61 +300,17 @@ struct ArchipelagoConnectWindow : public Window {
 				}
 				break;
 			}
+			case WAPGUI_CHECKBOX_MULT:
+				if (_game_mode == GM_MENU) {
+					this->menu_multiplayer_mode = !this->menu_multiplayer_mode;
+					this->SetDirty();
+				}
+				break;
 			case WAPGUI_BTN_DISCONNECT_INGAME:
-				if (_ap_client) _ap_client->Disconnect();
+				if (_ap_client) {
+					_ap_client->Disconnect();
+				}
 				this->SetDirty();
-				break;
-		}
-	}
-};
-
-struct APPlayModeChoiceWindow : public Window {
-	APPlayModeChoiceWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc)
-	{
-		this->CreateNestedTree();
-		this->FinishInitNested(wnum);
-	}
-
-	void DrawWidget(const Rect &r, WidgetID widget) const override
-	{
-		const int text_y = r.top + std::max(0, ((int)r.Height() - GetCharacterHeight(FS_NORMAL)) / 2);
-		if (widget == WAPPM_TEXT) {
-			DrawString(r.left, r.right, r.top, "Play AP as Singleplayer or Multiplayer?", TC_BLACK, SA_HOR_CENTER);
-			return;
-		}
-		if (widget == WAPPM_BTN_SINGLE) {
-			DrawString(r.left, r.right, text_y, "Singleplayer", TC_BLACK, SA_HOR_CENTER);
-			return;
-		}
-		if (widget == WAPPM_BTN_MULTI) {
-			DrawString(r.left, r.right, text_y, "Multiplayer", TC_BLACK, SA_HOR_CENTER);
-			return;
-		}
-		if (widget == WAPPM_BTN_CANCEL) {
-			DrawString(r.left, r.right, text_y, "Cancel", TC_BLACK, SA_HOR_CENTER);
-			return;
-		}
-	}
-
-	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int click_count) override
-	{
-		auto *connect = static_cast<ArchipelagoConnectWindow *>(FindWindowById(WC_ARCHIPELAGO, 0));
-		if (connect == nullptr) {
-			this->Close();
-			return;
-		}
-
-		switch (widget) {
-			case WAPPM_BTN_SINGLE:
-				this->Close();
-				connect->OnMenuPlayModeChosen(false);
-				break;
-			case WAPPM_BTN_MULTI:
-				this->Close();
-				connect->OnMenuPlayModeChosen(true);
-				break;
-			case WAPPM_BTN_CANCEL:
-				this->Close();
 				break;
 		}
 	}
@@ -394,23 +368,11 @@ struct APStartFlowChoiceWindow : public Window {
 	}
 };
 
-static WindowDesc _ap_play_mode_desc(
-	WDP_CENTER, {"ap_play_mode"}, 360, 96,
-	WC_ARCHIPELAGO, WC_NONE, {},
-	_nested_ap_play_mode_widgets
-);
-
 static WindowDesc _ap_start_flow_desc(
 	WDP_CENTER, {"ap_start_flow"}, 360, 96,
 	WC_ARCHIPELAGO, WC_NONE, {},
 	_nested_ap_start_flow_widgets
 );
-
-static void ShowAPPlayModeChoiceWindow()
-{
-	CloseWindowById(WC_ARCHIPELAGO, 4);
-	AllocateWindowDescFront<APPlayModeChoiceWindow>(_ap_play_mode_desc, 4);
-}
 
 static void ShowAPStartFlowChoiceWindow()
 {
@@ -418,16 +380,36 @@ static void ShowAPStartFlowChoiceWindow()
 	AllocateWindowDescFront<APStartFlowChoiceWindow>(_ap_start_flow_desc, 5);
 }
 
-static WindowDesc _ap_connect_desc(
-	WDP_CENTER, {}, 380, 196,
+static WindowDesc _ap_connect_menu_desc(
+	WDP_CENTER, {}, 380, 170,
 	WC_ARCHIPELAGO, WC_NONE, {},
 	_nested_ap_widgets
 );
 
-void ShowArchipelagoConnectWindow()
+static WindowDesc _ap_connect_ingame_desc(
+	WDP_CENTER, {}, 380, 152,
+	WC_ARCHIPELAGO, WC_NONE, {},
+	_nested_ap_widgets
+);
+
+static void ShowArchipelagoConnectWindowWithDesc(WindowDesc &desc)
 {
 	if (_ap_client == nullptr) InitArchipelago();
-	AllocateWindowDescFront<ArchipelagoConnectWindow>(_ap_connect_desc, 0);
+	/* Reset runtime-resized dimensions so the chosen default size is applied. */
+	desc.pref_width = 0;
+	desc.pref_height = 0;
+	CloseWindowById(WC_ARCHIPELAGO, 0);
+	AllocateWindowDescFront<ArchipelagoConnectWindow>(desc, 0);
+}
+
+void ShowArchipelagoConnectWindow()
+{
+	ShowArchipelagoConnectWindowWithDesc(_ap_connect_menu_desc);
+}
+
+static void ShowArchipelagoInGameConnectWindow()
+{
+	ShowArchipelagoConnectWindowWithDesc(_ap_connect_ingame_desc);
 }
 
 /* =========================================================================
@@ -439,6 +421,7 @@ enum APStatusWidgets : WidgetID {
 	WAPST_GOAL_LINE,
 	WAPST_BTN_MISSIONS,
 	WAPST_BTN_INVENTORY,
+	WAPST_BTN_SHOP,
 	WAPST_SEL_SETTINGS,
 	WAPST_BTN_SETTINGS_CONNECTED,
 	WAPST_BTN_SETTINGS_DISCONNECTED,
@@ -452,14 +435,15 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 	EndContainer(),
 	NWidget(WWT_PANEL, COLOUR_DARK_GREEN), SetResize(1, 1),
 		NWidget(NWID_VERTICAL), SetPIP(2, 2, 2), SetPadding(4),
-			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_STATUS_LINE), SetMinimalSize(220, 12), SetFill(1, 0), SetStringTip(STR_EMPTY),
-			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_GOAL_LINE),   SetMinimalSize(220, 12), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_STATUS_LINE), SetMinimalSize(276, 12), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_TEXT, INVALID_COLOUR, WAPST_GOAL_LINE),   SetMinimalSize(276, 12), SetFill(1, 0), SetStringTip(STR_EMPTY),
 			NWidget(NWID_HORIZONTAL), SetPIP(0, 3, 0),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_INVENTORY),  SetStringTip(STR_ARCHIPELAGO_BTN_INVENTORY),  SetMinimalSize(70, 14),
-				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_MISSIONS),  SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS),  SetMinimalSize(70, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_INVENTORY),  SetStringTip(STR_ARCHIPELAGO_BTN_INVENTORY),  SetMinimalSize(58, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_SHOP),       SetStringTip(STR_ARCHIPELAGO_BTN_SHOP),       SetMinimalSize(58, 14),
+				NWidget(WWT_PUSHTXTBTN, COLOUR_YELLOW, WAPST_BTN_MISSIONS),   SetStringTip(STR_ARCHIPELAGO_BTN_MISSIONS),   SetMinimalSize(58, 14),
 				NWidget(NWID_SELECTION, INVALID_COLOUR, WAPST_SEL_SETTINGS),
-					NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPST_BTN_SETTINGS_CONNECTED), SetStringTip(STR_EMPTY), SetMinimalSize(70, 14),
-					NWidget(WWT_PUSHTXTBTN, COLOUR_RED,   WAPST_BTN_SETTINGS_DISCONNECTED), SetStringTip(STR_EMPTY), SetMinimalSize(70, 14),
+					NWidget(WWT_PUSHTXTBTN, COLOUR_GREEN, WAPST_BTN_SETTINGS_CONNECTED), SetStringTip(STR_EMPTY), SetMinimalSize(74, 14),
+					NWidget(WWT_PUSHTXTBTN, COLOUR_RED,   WAPST_BTN_SETTINGS_DISCONNECTED), SetStringTip(STR_EMPTY), SetMinimalSize(74, 14),
 				EndContainer(),
 			EndContainer(),
 		EndContainer(),
@@ -536,9 +520,11 @@ struct ArchipelagoStatusWindow : public Window {
 
 	void OnPaint() override {
 		bool connected = AP_IsConnected();
+		const bool shop_enabled = connected && AP_GetSlotData().enable_shop && !AP_GetSlotData().shop_locations.empty();
 		this->GetWidget<NWidgetStacked>(WAPST_SEL_SETTINGS)->SetDisplayedPlane(connected ? 0 : 1);
 		this->SetWidgetDisabledState(WAPST_BTN_MISSIONS, !AP_IsConnected());
 		this->SetWidgetDisabledState(WAPST_BTN_INVENTORY, !AP_IsConnected());
+		this->SetWidgetDisabledState(WAPST_BTN_SHOP, !shop_enabled);
 		this->DrawWidgets();
 	}
 
@@ -550,16 +536,19 @@ struct ArchipelagoStatusWindow : public Window {
 			case WAPST_BTN_INVENTORY:
 				ShowArchipelagoInventoryWindow();
 				break;
+			case WAPST_BTN_SHOP:
+				ShowArchipelagoShopWindow();
+				break;
 			case WAPST_BTN_SETTINGS_CONNECTED:
 			case WAPST_BTN_SETTINGS_DISCONNECTED:
-				ShowArchipelagoConnectWindow();
+				ShowArchipelagoInGameConnectWindow();
 				break;
 		}
 	}
 };
 
 static WindowDesc _ap_status_desc(
-	WDP_AUTO, {"ap_status"}, 228, 82,
+	WDP_AUTO, {"ap_status"}, 284, 82,
 	WC_ARCHIPELAGO_TICKER, WC_NONE, {},
 	_nested_ap_status_widgets
 );
@@ -764,9 +753,9 @@ struct ArchipelagoMissionsWindow : public Window {
 				}
 			}
 
-			/* Bug 2 fix: replace hardcoded £ in description with the current
-			 * game currency prefix so the mission text matches the player's
-			 * chosen currency (e.g. USD shows $ instead of £). */
+			/* Replace hardcoded £ in description with the current game currency
+			 * prefix so mission text matches the player's chosen currency
+			 * (e.g. USD shows $ instead of £). */
 			std::string desc = m->description;
 			{
 				const CurrencySpec &cs = GetCurrency();
@@ -868,7 +857,7 @@ static const char * const AP_CARGO_ORDER[] = {
 };
 static const char * const AP_VEHICLE_ORDER[] = {
 	"Progressive Trains", "Progressive Road Vehicles",
-	"Progressive Aircrafts", "Progressive Ships",
+	"Progressive Aircrafts", "Progressive Airports", "Progressive Ships",
 };
 
 struct ArchipelagoInventoryWindow : public Window {
@@ -896,7 +885,7 @@ struct ArchipelagoInventoryWindow : public Window {
 			if (it != counts.end() && it->second > 0) { any_vehicle = true; break; }
 		}
 		if (any_vehicle) {
-			rows.push_back({ InventoryRow::HEADER, "— Vehicles —" });
+			rows.push_back({ InventoryRow::HEADER, "— Progression —" });
 			const auto &prog_tiers  = AP_GetProgressiveTiers();
 			const auto &tier_counts = AP_GetUnlockedTierCounts();
 			for (const char *name : AP_VEHICLE_ORDER) {
@@ -936,7 +925,7 @@ struct ArchipelagoInventoryWindow : public Window {
 		}
 
 		/* ── Filler ────────────────────────────────────────────── */
-		static const char * const FILLER_ITEMS[] = { "50,000 $", "Choo chooo!" };
+		static const char * const FILLER_ITEMS[] = { "Cash Injection", "Choo chooo!" };
 		bool any_filler = false;
 		for (const char *name : FILLER_ITEMS) {
 			auto it = counts.find(name);
@@ -970,6 +959,7 @@ struct ArchipelagoInventoryWindow : public Window {
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
 	{
 		if (_ap_status_dirty.load()) RebuildRows();
+		this->SetDirty();
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override
@@ -1084,4 +1074,207 @@ static WindowDesc _ap_inventory_desc(
 void ShowArchipelagoInventoryWindow()
 {
 	AllocateWindowDescFront<ArchipelagoInventoryWindow>(_ap_inventory_desc, 3);
+}
+
+/* =========================================================================
+ * SHOP WINDOW — AP checks bought with in-game money
+ * ========================================================================= */
+
+enum APShopWidgets : WidgetID {
+	WAPSHOP_CAPTION,
+	WAPSHOP_SUMMARY,
+	WAPSHOP_LIST,
+	WAPSHOP_SCROLLBAR,
+	WAPSHOP_BTN_BUY,
+};
+
+static constexpr std::initializer_list<NWidgetPart> _nested_ap_shop_widgets = {
+	NWidget(NWID_HORIZONTAL),
+		NWidget(WWT_CLOSEBOX, COLOUR_GREY),
+		NWidget(WWT_CAPTION, COLOUR_GREY, WAPSHOP_CAPTION), SetTextStyle(TC_WHITE), SetStringTip(STR_ARCHIPELAGO_SHOP_CAPTION, STR_TOOLTIP_WINDOW_TITLE_DRAG_THIS), SetFill(1, 0), SetResize(1, 0),
+		NWidget(WWT_SHADEBOX, COLOUR_GREY),
+		NWidget(WWT_DEFSIZEBOX, COLOUR_GREY),
+		NWidget(WWT_STICKYBOX, COLOUR_GREY),
+	EndContainer(),
+	NWidget(NWID_VERTICAL),
+		NWidget(WWT_PANEL, COLOUR_GREY, WAPSHOP_SUMMARY), SetMinimalSize(280, 18), SetFill(1, 0), SetResize(1, 0), SetStringTip(STR_EMPTY), EndContainer(),
+		NWidget(NWID_HORIZONTAL),
+			NWidget(WWT_PANEL, COLOUR_GREY, WAPSHOP_LIST), SetMinimalSize(280, 200), SetFill(1, 1), SetResize(1, 1), SetScrollbar(WAPSHOP_SCROLLBAR), EndContainer(),
+			NWidget(NWID_VSCROLLBAR, COLOUR_GREY, WAPSHOP_SCROLLBAR),
+		EndContainer(),
+		NWidget(NWID_HORIZONTAL),
+			NWidget(WWT_PUSHTXTBTN, COLOUR_GREY, WAPSHOP_BTN_BUY), SetMinimalSize(72, 14), SetResize(1, 0), SetFill(1, 0), SetStringTip(STR_EMPTY),
+			NWidget(WWT_RESIZEBOX, COLOUR_GREY),
+		EndContainer(),
+	EndContainer(),
+};
+
+struct ArchipelagoShopWindow : public Window {
+	std::vector<const APShopLocation *> rows;
+	Scrollbar *scrollbar = nullptr;
+	int row_height = 0;
+	int selected_row = -1;
+
+	void RebuildRows()
+	{
+		/* Build in a temporary vector to avoid iterator invalidation during DrawWidget iteration */
+		std::vector<const APShopLocation *> new_rows;
+		const APSlotData &sd = AP_GetSlotData();
+		const int visible_count = AP_GetVisibleShopLocationCount();
+		for (int i = 0; i < visible_count && i < (int)sd.shop_locations.size(); i++) {
+			new_rows.push_back(&sd.shop_locations[i]);
+		}
+		/* Atomically swap the rows — DrawWidget will see a consistent list */
+		rows = new_rows;
+
+		if (rows.empty()) {
+			selected_row = -1;
+		} else if (selected_row >= (int)rows.size()) {
+			selected_row = (int)rows.size() - 1;
+		}
+		if (this->scrollbar != nullptr) this->scrollbar->SetCount((int)rows.size());
+		this->SetDirty();
+	}
+
+	const APShopLocation *GetSelectedShop() const
+	{
+		if (selected_row < 0 || selected_row >= (int)rows.size()) return nullptr;
+		return rows[selected_row];
+	}
+
+	bool CanBuySelectedShop() const
+	{
+		const APShopLocation *shop = GetSelectedShop();
+		if (shop == nullptr) return false;
+		if (AP_IsShopLocationPurchased(shop->location)) return false;
+		return GetAvailableMoney(_local_company) >= (Money)shop->cost;
+	}
+
+	ArchipelagoShopWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc)
+	{
+		this->row_height = GetCharacterHeight(FS_NORMAL) + 4;
+		this->CreateNestedTree();
+		this->scrollbar = this->GetScrollbar(WAPSHOP_SCROLLBAR);
+		this->scrollbar->SetStepSize(1);
+		this->FinishInitNested(wnum);
+		this->resize.step_height = row_height;
+		RebuildRows();
+	}
+
+	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
+	{
+		if (_ap_status_dirty.load()) {
+			RebuildRows();
+			_ap_status_dirty.store(false);
+		}
+	}
+
+	void OnPaint() override
+	{
+		this->SetWidgetDisabledState(WAPSHOP_BTN_BUY, !CanBuySelectedShop());
+		this->DrawWidgets();
+	}
+
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
+		if (widget == WAPSHOP_SUMMARY) {
+			const APSlotData &sd = AP_GetSlotData();
+			Money money = GetAvailableMoney(_local_company);
+			const int text_y = r.top + std::max(0, ((int)r.Height() - GetCharacterHeight(FS_NORMAL)) / 2);
+			DrawString(r.left + 6, r.right - 6, text_y,
+			    fmt::format("Visible: {}/{}   Cash: {}", AP_GetVisibleShopLocationCount(), sd.shop_locations.size(), AP_FormatMoneyCompact(money)),
+			    TC_GOLD);
+			return;
+		}
+
+		if (widget == WAPSHOP_BTN_BUY) {
+			const int text_y = r.top + std::max(0, ((int)r.Height() - GetCharacterHeight(FS_NORMAL)) / 2);
+			DrawString(r.left, r.right, text_y, "Buy", TC_BLACK, SA_HOR_CENTER);
+			return;
+		}
+
+		if (widget != WAPSHOP_LIST) return;
+
+		int rh = GetCharacterHeight(FS_NORMAL) + 4;
+		int y = r.top + 2;
+		int first = this->scrollbar->GetPosition();
+		int last = first + (r.Height() / rh) + 1;
+		Money money = GetAvailableMoney(_local_company);
+
+		for (int i = first; i < last && i < (int)rows.size(); i++) {
+			const APShopLocation *shop = rows[i];
+			/* Determine purchase state: check both explicitly purchased set AND checked locations */
+			bool purchased = AP_IsShopLocationPurchased(shop->location);
+			if (!purchased) {
+				/* Also check if this location was checked by AP (authoritative source) */
+				const APSlotData &sd = AP_GetSlotData();
+				auto id_it = sd.location_name_to_id.find(shop->location);
+				if (id_it != sd.location_name_to_id.end()) {
+					purchased = (sd.checked_locations.count(id_it->second) != 0);
+				}
+			}
+			const bool affordable = money >= (Money)shop->cost;
+			const std::string selection = (i == selected_row) ? ">" : " ";
+			const std::string marker = purchased ? "[X]" : "[ ]";
+			const std::string line = fmt::format("{} {} {} - {}", selection, marker, shop->name, AP_FormatMoneyCompact(shop->cost));
+			TextColour colour = purchased ? TC_GREEN : (affordable ? ((i == selected_row) ? TC_GOLD : TC_WHITE) : TC_GREY);
+			DrawString(r.left + 6, r.right - 4, y, line, colour, SA_LEFT | SA_FORCE);
+			y += rh;
+			if (y > r.bottom) break;
+		}
+	}
+
+	void OnClick(Point pt, WidgetID widget, [[maybe_unused]] int cc) override
+	{
+		if (widget == WAPSHOP_BTN_BUY) {
+			const APShopLocation *shop = GetSelectedShop();
+			if (shop != nullptr && AP_PurchaseShopLocation(shop->location)) RebuildRows();
+			return;
+		}
+
+		if (widget != WAPSHOP_LIST) return;
+
+		const NWidgetBase *wid = this->GetWidget<NWidgetBase>(WAPSHOP_LIST);
+		int rel_y = pt.y - wid->pos_y - 2;
+		if (rel_y < 0) return;
+
+		int clicked_row = this->scrollbar->GetPosition() + rel_y / (GetCharacterHeight(FS_NORMAL) + 4);
+		if (clicked_row < 0 || clicked_row >= (int)rows.size()) return;
+
+		selected_row = clicked_row;
+		this->SetDirty();
+	}
+
+	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override { this->SetDirty(); }
+
+	void OnResize() override
+	{
+		if (this->scrollbar != nullptr) {
+			int rh = GetCharacterHeight(FS_NORMAL) + 4;
+			this->scrollbar->SetCapacity(this->GetWidget<NWidgetBase>(WAPSHOP_LIST)->current_y / rh);
+		}
+	}
+
+	void UpdateWidgetSize(WidgetID widget, Dimension &size, [[maybe_unused]] const Dimension &padding,
+	                      [[maybe_unused]] Dimension &fill, Dimension &resize) override
+	{
+		if (widget == WAPSHOP_LIST) {
+			resize.height = row_height;
+			resize.width = 1;
+			size.height = std::max(size.height, (uint)(row_height * 14));
+		}
+	}
+};
+
+static WindowDesc _ap_shop_desc(
+	WDP_AUTO, {"ap_shop"}, 360, 320,
+	WC_ARCHIPELAGO, WC_NONE, {},
+	_nested_ap_shop_widgets
+);
+
+void ShowArchipelagoShopWindow()
+{
+	const APSlotData &sd = AP_GetSlotData();
+	if (!sd.enable_shop || sd.shop_locations.empty()) return;
+	AllocateWindowDescFront<ArchipelagoShopWindow>(_ap_shop_desc, 6);
 }

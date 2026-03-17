@@ -18,6 +18,7 @@ void ShowArchipelagoConnectWindow();
 void ShowArchipelagoStatusWindow();
 void ShowArchipelagoMissionsWindow();
 void ShowArchipelagoInventoryWindow();
+void ShowArchipelagoShopWindow();
 void AP_ShowConsole(const std::string &msg);
 
 extern std::string _ap_last_host;
@@ -42,7 +43,6 @@ bool              AP_IsConnected();
  * StartNewGameWithoutGUI must never be called from inside a timer callback. */
 void     EnsureHandlersRegistered();
 void     AP_SendCheckByName(const std::string &location_name);
-void     AP_SendDeath(const std::string &cause);  ///< Send Death Link event (train/road crash)
 bool     AP_ShouldStartWorld();
 void     AP_ConsumeWorldStart();   /* applies settings, clears flag */
 uint32_t AP_GetWorldSeed();        /* seed to pass to StartNewGameWithoutGUI */

@@ -1,1 +1,0 @@
-﻿from .world import OpenTTDWorld as OpenTTDWorld

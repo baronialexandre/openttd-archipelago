@@ -44,6 +44,7 @@
 #include "group_gui.h"
 #include "misc_cmd.h"
 #include "object_cmd.h"
+#include "archipelago.h"
 #include "timer/timer.h"
 #include "timer/timer_window.h"
 #include "core/string_consumer.hpp"
@@ -651,7 +652,8 @@ private:
 			list.push_back(std::make_unique<DropDownListColourItem<>>(default_col, false));
 		}
 		for (Colours colour = COLOUR_BEGIN; colour != COLOUR_END; colour++) {
-			list.push_back(std::make_unique<DropDownListColourItem<>>(colour, HasBit(used_colours, colour)));
+			bool masked = HasBit(used_colours, colour) || !AP_IsCompanyColourUnlocked(colour);
+			list.push_back(std::make_unique<DropDownListColourItem<>>(colour, masked));
 		}
 
 		uint8_t sel;

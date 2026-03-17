@@ -560,11 +560,6 @@ static void RoadVehCrash(RoadVehicle *v)
 	AI::NewEvent(v->owner, new ScriptEventVehicleCrashed(v->index, v->tile, ScriptEventVehicleCrashed::CRASH_RV_LEVEL_CROSSING, victims, v->owner));
 	Game::NewEvent(new ScriptEventVehicleCrashed(v->index, v->tile, ScriptEventVehicleCrashed::CRASH_RV_LEVEL_CROSSING, victims, v->owner));
 
-	/* Death Link: road vehicle hit by a train at level crossing */
-	if (v->owner == _local_company) {
-		AP_SendDeath("Road vehicle hit by train");
-	}
-
 	EncodedString headline = (victims == 1)
 		? GetEncodedString(STR_NEWS_ROAD_VEHICLE_CRASH_DRIVER)
 		: GetEncodedString(STR_NEWS_ROAD_VEHICLE_CRASH, victims);

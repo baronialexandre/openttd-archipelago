@@ -8,6 +8,7 @@
 /** @file highscore_gui.cpp Definition of the HighScore and EndGame windows */
 
 #include "stdafx.h"
+#include "archipelago.h"
 #include "highscore.h"
 #include "gfx_func.h"
 #include "table/sprites.h"
@@ -262,6 +263,9 @@ void ShowEndGameChart()
 
 static const IntervalTimer<TimerGameCalendar> _check_end_game({TimerGameCalendar::YEAR, TimerGameCalendar::Priority::NONE}, [](auto)
 {
+	/* In AP mode, endgame is triggered by AP goal completion, not by year. */
+	if (AP_IsActive()) return;
+
 	/* 0 = never */
 	if (_settings_game.game_creation.ending_year == 0) return;
 

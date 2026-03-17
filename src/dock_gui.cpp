@@ -30,6 +30,7 @@
 #include "station_cmd.h"
 #include "water_cmd.h"
 #include "waypoint_cmd.h"
+#include "archipelago.h"
 #include "timer/timer.h"
 #include "timer/timer_game_calendar.h"
 
@@ -128,8 +129,16 @@ struct BuildDocksToolbarWindow : Window {
 			WID_DT_DEPOT,
 			WID_DT_STATION,
 			WID_DT_BUOY);
+		bool can_build_depot = can_build && AP_IsShipUnlocked();
+		bool can_build_station = can_build && AP_IsShipUnlocked();
+		this->SetWidgetDisabledState(WID_DT_DEPOT, !can_build_depot);
+		this->SetWidgetDisabledState(WID_DT_STATION, !can_build_station);
 		if (!can_build) {
 			CloseWindowById(WC_BUILD_STATION, TRANSPORT_WATER);
+			CloseWindowById(WC_BUILD_DEPOT, TRANSPORT_WATER);
+		} else if (!can_build_station) {
+			CloseWindowById(WC_BUILD_STATION, TRANSPORT_WATER);
+		} else if (!can_build_depot) {
 			CloseWindowById(WC_BUILD_DEPOT, TRANSPORT_WATER);
 		}
 
@@ -140,8 +149,8 @@ struct BuildDocksToolbarWindow : Window {
 				this->GetWidget<NWidgetCore>(WID_DT_STATION)->SetToolTip(STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
 				this->GetWidget<NWidgetCore>(WID_DT_BUOY)->SetToolTip(STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
 			} else {
-				this->GetWidget<NWidgetCore>(WID_DT_DEPOT)->SetToolTip(STR_WATERWAYS_TOOLBAR_BUILD_DEPOT_TOOLTIP);
-				this->GetWidget<NWidgetCore>(WID_DT_STATION)->SetToolTip(STR_WATERWAYS_TOOLBAR_BUILD_DOCK_TOOLTIP);
+				this->GetWidget<NWidgetCore>(WID_DT_DEPOT)->SetToolTip(can_build_depot ? STR_WATERWAYS_TOOLBAR_BUILD_DEPOT_TOOLTIP : STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
+				this->GetWidget<NWidgetCore>(WID_DT_STATION)->SetToolTip(can_build_station ? STR_WATERWAYS_TOOLBAR_BUILD_DOCK_TOOLTIP : STR_TOOLBAR_DISABLED_NO_VEHICLE_AVAILABLE);
 				this->GetWidget<NWidgetCore>(WID_DT_BUOY)->SetToolTip(STR_WATERWAYS_TOOLBAR_BUOY_TOOLTIP);
 			}
 		}
