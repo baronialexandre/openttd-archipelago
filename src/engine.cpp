@@ -33,8 +33,6 @@
 #include "timer/timer.h"
 #include "timer/timer_game_tick.h"
 #include "timer/timer_game_calendar.h"
-#include "archipelago.h"  /* AP_IsActive() — blocks vanilla date-based engine introduction */
-
 #include "table/strings.h"
 #include "table/engines.h"
 
@@ -1153,12 +1151,6 @@ void CalendarEnginesMonthlyLoop()
 			if (!e->IsEnabled()) continue;
 
 			if (!e->flags.Test(EngineFlag::Available) && TimerGameCalendar::date >= (e->intro_date + CalendarTime::DAYS_IN_YEAR)) {
-				/* Archipelago: block vanilla date-based introduction.
-				 * AP_IsActive() returns true when an AP session is authenticated.
-				 * The AP manager will call EnableEngineForCompany() directly when
-				 * the server sends us the unlock item for this engine. */
-				if (AP_IsActive()) continue;
-
 				/* Introduce it to all companies */
 				NewVehicleAvailable(e);
 			} else if (!e->flags.Any({EngineFlag::Available, EngineFlag::ExclusivePreview}) && TimerGameCalendar::date >= e->intro_date) {
@@ -1173,9 +1165,6 @@ void CalendarEnginesMonthlyLoop()
 
 				/* Engine has no preview */
 				if (e->info.extra_flags.Test(ExtraEngineFlag::NoPreview)) continue;
-
-				/* Archipelago: also block exclusive preview dialogs during AP sessions. */
-				if (AP_IsActive()) continue;
 
 				/* Show preview dialog to one of the companies. */
 				e->flags.Set(EngineFlag::ExclusivePreview);

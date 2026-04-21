@@ -244,6 +244,8 @@ add_files(
     ini_type.h
     archipelago.cpp
     archipelago.h
+    archipelago_cmd.h
+    archipelago_cmd.cpp
     archipelago_gui.cpp
     archipelago_gui.h
     archipelago_manager.cpp

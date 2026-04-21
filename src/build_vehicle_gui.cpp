@@ -46,6 +46,8 @@
 
 #include "table/strings.h"
 
+#include "archipelago.h"
+
 #include "safeguards.h"
 
 /**
@@ -1397,7 +1399,12 @@ struct BuildVehicleWindow : Window {
 			const RailVehicleInfo *rvi = &e->VehInfo<RailVehicleInfo>();
 
 			if (this->filter.railtype != INVALID_RAILTYPE && !HasPowerOnRail(rvi->railtypes, this->filter.railtype)) continue;
-			if (!IsEngineBuildable(eid, VEH_TRAIN, _local_company)) continue;
+			if (AP_IsCompanyAPActive(_local_company)) {
+				if (!e->IsEnabled()) continue;
+				if (!AP_IsCompanyEngineUnlocked(_local_company, eid)) continue;
+			} else {
+				if (!IsEngineBuildable(eid, VEH_TRAIN, _local_company)) continue;
+			}
 
 			/* Filter now! So num_engines and num_wagons is valid */
 			if (!FilterSingleEngine(eid)) continue;
@@ -1459,7 +1466,12 @@ struct BuildVehicleWindow : Window {
 		for (const Engine *e : Engine::IterateType(VEH_ROAD)) {
 			if (!this->show_hidden_engines && e->IsVariantHidden(_local_company)) continue;
 			EngineID eid = e->index;
-			if (!IsEngineBuildable(eid, VEH_ROAD, _local_company)) continue;
+			if (AP_IsCompanyAPActive(_local_company)) {
+				if (!e->IsEnabled()) continue;
+				if (!AP_IsCompanyEngineUnlocked(_local_company, eid)) continue;
+			} else {
+				if (!IsEngineBuildable(eid, VEH_ROAD, _local_company)) continue;
+			}
 			if (this->filter.roadtype != INVALID_ROADTYPE && !HasPowerOnRoad(e->VehInfo<RoadVehicleInfo>().roadtype, this->filter.roadtype)) continue;
 			if (!bdf.Filter(e->badges)) continue;
 
@@ -1485,7 +1497,12 @@ struct BuildVehicleWindow : Window {
 		for (const Engine *e : Engine::IterateType(VEH_SHIP)) {
 			if (!this->show_hidden_engines && e->IsVariantHidden(_local_company)) continue;
 			EngineID eid = e->index;
-			if (!IsEngineBuildable(eid, VEH_SHIP, _local_company)) continue;
+			if (AP_IsCompanyAPActive(_local_company)) {
+				if (!e->IsEnabled()) continue;
+				if (!AP_IsCompanyEngineUnlocked(_local_company, eid)) continue;
+			} else {
+				if (!IsEngineBuildable(eid, VEH_SHIP, _local_company)) continue;
+			}
 			if (!bdf.Filter(e->badges)) continue;
 
 			/* Filter by name or NewGRF extra text */
@@ -1517,7 +1534,12 @@ struct BuildVehicleWindow : Window {
 		for (const Engine *e : Engine::IterateType(VEH_AIRCRAFT)) {
 			if (!this->show_hidden_engines && e->IsVariantHidden(_local_company)) continue;
 			EngineID eid = e->index;
-			if (!IsEngineBuildable(eid, VEH_AIRCRAFT, _local_company)) continue;
+			if (AP_IsCompanyAPActive(_local_company)) {
+				if (!e->IsEnabled()) continue;
+				if (!AP_IsCompanyEngineUnlocked(_local_company, eid)) continue;
+			} else {
+				if (!IsEngineBuildable(eid, VEH_AIRCRAFT, _local_company)) continue;
+			}
 			/* First VEH_END window_numbers are fake to allow a window open for all different types at once */
 			if (!this->listview_mode && !CanVehicleUseStation(eid, st)) continue;
 			if (!bdf.Filter(e->badges)) continue;

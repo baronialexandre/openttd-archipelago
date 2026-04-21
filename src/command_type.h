@@ -375,6 +375,12 @@ enum Commands : uint8_t {
 	CMD_UPDATE_LEAGUE_TABLE_ELEMENT_SCORE, ///< update the score of a league table element
 	CMD_REMOVE_LEAGUE_TABLE_ELEMENT,       ///< remove a league table element
 
+	CMD_AP_SET_CARGO_UNLOCK,               ///< synchronize AP cargo unlock state per company
+	CMD_AP_MONEY,                          ///< AP money adjustment (cash injection, shop purchase, bonus)
+	CMD_AP_SET_COMPANY_AP_ACTIVE,          ///< mark a company as having AP restrictions active
+	CMD_AP_SET_ENGINE_UNLOCK,              ///< synchronize AP engine unlock state per company
+	CMD_AP_SET_AIRPORT_TIER,               ///< synchronize AP airport tier per company
+
 	CMD_END,                          ///< Must ALWAYS be on the end of this list!! (period)
 };
 

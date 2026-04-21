@@ -1095,7 +1095,6 @@ void UpdateCompanyLiveries(Company *c)
 CommandCost CmdSetCompanyColour(DoCommandFlags flags, LiveryScheme scheme, bool primary, Colours colour)
 {
 	if (scheme >= LS_END || (colour >= COLOUR_END && colour != INVALID_COLOUR)) return CMD_ERROR;
-	if (colour != INVALID_COLOUR && !AP_IsCompanyColourUnlocked(colour)) return CMD_ERROR;
 
 	/* Default scheme can't be reset to invalid. */
 	if (scheme == LS_DEFAULT && colour == INVALID_COLOUR) return CMD_ERROR;

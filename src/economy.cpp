@@ -1774,8 +1774,13 @@ static void LoadUnloadVehicle(Vehicle *front)
 			ge->time_since_pickup = 0;
 
 			/* If there's goods waiting at the station, and the vehicle
-			 * has capacity for it, load it on the vehicle. */
-			if ((v->cargo.ActionCount(VehicleCargoList::MTA_LOAD) > 0 || ge->AvailableCount() > 0) && MayLoadUnderExclusiveRights(st, v)) {
+			 * has capacity for it, load it on the vehicle.
+			 * Archipelago cargo lock: block loading if the vehicle owner's company
+			 * has not unlocked this cargo type. Checked here (not at station deposit)
+			 * so both machines always agree on station cargo amounts — no desync. */
+			if (!AP_IsCompanyCargoUnlocked(v->owner, (uint8_t)v->cargo_type)) {
+				/* Cargo locked for this vehicle owner — skip loading. */
+			} else if ((v->cargo.ActionCount(VehicleCargoList::MTA_LOAD) > 0 || ge->AvailableCount() > 0) && MayLoadUnderExclusiveRights(st, v)) {
 				if (v->cargo.StoredCount() == 0) TriggerVehicleRandomisation(v, VehicleRandomTrigger::NewCargo);
 				if (_settings_game.order.gradual_loading) cap_left = std::min(cap_left, GetLoadAmount(v));
 

@@ -184,9 +184,17 @@ struct ArchipelagoConnectWindow : public Window {
 		_ap_last_slot = slot_str; _ap_last_pass = pass_str;
 		AP_SaveConnectionConfig(); /* persist for next session */
 		_ap_last_ssl = false; /* unused — auto-detect in WorkerThread */
+		AP_RestoreItemsIndexBeforeConnect();
 		_ap_client->Connect(host, port, slot_str, pass_str, "OpenTTD Cargolock", false);
 
 		if (!start_new_mode && _game_mode == GM_MENU) {
+			if (this->menu_multiplayer_mode) {
+				/* Host a multiplayer server loaded from a save file.
+				 * Setting _is_network_server = true before ShowSaveLoadDialog
+				 * makes OpenTTD call NetworkServerStart() automatically when
+				 * the save finishes loading (same as the normal Start Server flow). */
+				_is_network_server = true;
+			}
 			ShowSaveLoadDialog(FT_SAVEGAME, SLO_LOAD);
 		}
 
@@ -208,8 +216,12 @@ struct ArchipelagoConnectWindow : public Window {
 		this->querystrings[WAPGUI_EDIT_PASS]   = &pass_buf;
 		this->FinishInitNested(wnum);
 
-		/* Restore last connection settings from ap_connection.cfg */
-		AP_LoadConnectionConfig();
+		/* Restore last connection settings from ap_connection.cfg,
+		 * but only when the in-memory state is empty (first window open).
+		 * If _ap_last_host is already set (e.g. we're connected, or a second
+		 * instance on the same PC just overwrote the cfg), keep the in-memory
+		 * values so the window reflects THIS instance's connection. */
+		if (_ap_last_host.empty()) AP_LoadConnectionConfig();
 
 		std::string full = _ap_last_host.empty() ? "archipelago.gg:38281"
 		                 : _ap_last_host + ":" + fmt::format("{}", _ap_last_port);
@@ -671,7 +683,10 @@ struct ArchipelagoMissionsWindow : public Window {
 	}
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
-		if (_ap_status_dirty.load()) RebuildVisibleList();
+		if (_ap_status_dirty.exchange(false)) {
+			RebuildVisibleList();
+			this->SetDirty();
+		}
 	}
 
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override {
@@ -958,8 +973,10 @@ struct ArchipelagoInventoryWindow : public Window {
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
 	{
-		if (_ap_status_dirty.load()) RebuildRows();
-		this->SetDirty();
+		if (_ap_status_dirty.exchange(false)) {
+			RebuildRows();
+			this->SetDirty();
+		}
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override
@@ -1176,7 +1193,8 @@ struct ArchipelagoShopWindow : public Window {
 			if (AP_IsShopLocationPurchased(sd.shop_locations[i].location)) purchased_visible_count++;
 		}
 
-		if (_ap_status_dirty.load() ||
+		const bool status_changed = _ap_status_dirty.exchange(false);
+		if (status_changed ||
 		    visible_count != last_visible_count ||
 		    total_shop_count != last_total_shop_count ||
 		    money != last_money ||
@@ -1186,6 +1204,7 @@ struct ArchipelagoShopWindow : public Window {
 			last_money = money;
 			last_purchased_visible_count = purchased_visible_count;
 			RebuildRows();
+			this->SetDirty();
 		}
 	}
 

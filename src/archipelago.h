@@ -22,6 +22,9 @@
 
 enum Colours : uint8_t;
 
+#include "company_type.h"
+#include "engine_type.h"
+
 /** Connection states for the Archipelago client. */
 enum class APState : uint8_t {
 	DISCONNECTED,
@@ -201,6 +204,7 @@ public:
 
 	int64_t GetReceivedItemsIndex() const { return items_received_index.load(); }
 	void    ResetReceivedItemsIndex()     { items_received_index.store(0); }
+	void    SetReceivedItemsIndex(int64_t v) { items_received_index.store(v); }
 
 	APCallbacks callbacks;
 
@@ -265,14 +269,41 @@ void UninitArchipelago();
  */
 bool AP_IsActive();
 
-/** Returns true when the cargo type index is unlocked by AP items. */
+/** Returns true when the cargo type index is unlocked by AP items (client-local check). */
 bool AP_IsCargoTypeUnlocked(uint8_t cargo_type);
+
+/** Returns true when the cargo type is unlocked for a specific company (synchronized). */
+bool AP_IsCompanyCargoUnlocked(CompanyID company, uint8_t cargo_type);
+/** Reset per-company cargo unlock state (called at AP session start). */
+void AP_ResetCompanyCargoUnlocks(CompanyID company);
+
+/** Per-company AP-active flag — true if this company has AP restrictions (synchronized). */
+bool AP_IsCompanyAPActive(CompanyID company);
+/** Reset all per-company AP state (active flag, engine unlocks, airport tier). */
+void AP_ResetCompanyAPState(CompanyID company);
+
+/** Per-company engine unlock check (synchronized). Checks wagon cargo too. */
+bool AP_IsCompanyEngineUnlocked(CompanyID company, EngineID eid);
+
+/** Per-company airport type unlock check (synchronized via airport tier). */
+bool AP_IsCompanyAirportTypeUnlocked(CompanyID company, uint8_t airport_type);
+
+/** Get per-company airport tier count (synchronized). */
+uint8_t AP_GetCompanyAirportTier(CompanyID company);
 
 /** Returns true when at least one tier of the progressive item is unlocked. */
 bool AP_IsTrainUnlocked();
 bool AP_IsRoadVehicleUnlocked();
 bool AP_IsAircraftUnlocked();
 bool AP_IsShipUnlocked();
+
+/** Returns true when an engine has been explicitly unlocked by AP items.
+ *  Used by the build-vehicle GUI to filter the purchase list. */
+bool AP_IsEngineUnlocked(EngineID eid);
+
+/** Returns true when an airport type has been unlocked by AP progressive tiers.
+ *  Used by the airport picker GUI to grey out locked airports. */
+bool AP_IsAirportTypeUnlocked(uint8_t airport_type);
 
 /** Returns true when a company colour is unlocked by AP items. */
 bool AP_IsCompanyColourUnlocked(Colours colour);

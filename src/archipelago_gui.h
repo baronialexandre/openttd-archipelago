@@ -36,6 +36,7 @@ const std::map<std::string, std::vector<std::vector<std::string>>> &AP_GetProgre
 const std::map<std::string, int> &AP_GetUnlockedTierCounts();
 void AP_SaveConnectionConfig();
 void AP_LoadConnectionConfig();
+void AP_RestoreItemsIndexBeforeConnect();
 void AP_EnsureBasesets();
 bool              AP_IsConnected();
 

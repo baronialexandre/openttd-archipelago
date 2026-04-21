@@ -395,7 +395,8 @@ public:
 				auto [first, last] = this->vscroll->GetVisibleRangeIterators(specs);
 				for (auto it = first; it != last; ++it) {
 					const AirportSpec *as = *it;
-					if (!as->IsAvailable()) {
+					bool usable = AP_IsCompanyAPActive(_local_company) ? (as->enabled && AP_IsCompanyAirportTypeUnlocked(_local_company, as->GetIndex())) : as->IsAvailable();
+					if (!usable) {
 						GfxFillRect(row, PC_BLACK, FILLRECT_CHECKER);
 					}
 					DrawString(text, as->name, (static_cast<int>(as->index) == _selected_airport_index) ? TC_WHITE : TC_BLACK);
@@ -507,7 +508,8 @@ public:
 				int32_t num_clicked = this->vscroll->GetScrolledRowFromWidget(pt.y, this, widget, 0, this->line_height);
 				if (num_clicked == INT32_MAX) break;
 				const AirportSpec *as = AirportClass::Get(_selected_airport_class)->GetSpec(num_clicked);
-				if (as->IsAvailable()) this->SelectOtherAirport(num_clicked);
+				bool usable = AP_IsCompanyAPActive(_local_company) ? (as->enabled && AP_IsCompanyAirportTypeUnlocked(_local_company, as->GetIndex())) : as->IsAvailable();
+				if (usable) this->SelectOtherAirport(num_clicked);
 				break;
 			}
 
@@ -545,7 +547,8 @@ public:
 		/* First try to select an airport in the selected class. */
 		AirportClass *sel_apclass = AirportClass::Get(_selected_airport_class);
 		for (const AirportSpec *as : sel_apclass->Specs()) {
-			if (as->IsAvailable()) {
+			bool usable = AP_IsCompanyAPActive(_local_company) ? (as->enabled && AP_IsCompanyAirportTypeUnlocked(_local_company, as->GetIndex())) : as->IsAvailable();
+			if (usable) {
 				this->SelectOtherAirport(as->index);
 				return;
 			}
@@ -555,7 +558,8 @@ public:
 			 * from the first class where airports are available. */
 			for (const auto &cls : AirportClass::Classes()) {
 				for (const auto &as : cls.Specs()) {
-					if (as->IsAvailable()) {
+					bool usable = AP_IsCompanyAPActive(_local_company) ? (as->enabled && AP_IsCompanyAirportTypeUnlocked(_local_company, as->GetIndex())) : as->IsAvailable();
+					if (usable) {
 						_selected_airport_class = cls.Index();
 						this->vscroll->SetCount(cls.GetSpecCount());
 						this->SelectOtherAirport(as->index);
