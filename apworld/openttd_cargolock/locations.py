@@ -1,4 +1,5 @@
 from __future__ import annotations
+import random as py_random
 from typing import Dict, List, TYPE_CHECKING
 from BaseClasses import Location, Region, ItemClassification
 from . import items
@@ -7,9 +8,8 @@ if TYPE_CHECKING:
     from .world import OpenTTDWorld
 
 CARGO_TYPES = [  # Temperate
-        "Passengers", "Mail", "Coal", "Oil",
-        "Livestock", "Goods", "Grain", "Wood",
-        "Iron Ore", "Steel", "Valuables",
+        "Passengers", "Mail", "Valuables", "Coal", "Oil",
+        "Livestock", "Grain", "Wood", "Iron Ore", "Steel", "Goods",
     ]
 
 # ── Tiered cargo mission constants ────────────────────────────────────────
@@ -20,8 +20,24 @@ CARGO_TIER_MAX = 10
 # Default number of tiers generated when no YAML option overrides.
 CARGO_TIER_DEFAULT = 3
 
-# First tier amount; each subsequent tier is ×10.
-CARGO_TIER_BASE = 1_000
+# Fixed amounts for each tier (index 0 = tier 1).
+CARGO_TIER_AMOUNTS = [
+    1_000,
+    5_000,
+    10_000,
+    50_000,
+    100_000,
+    500_000,
+    1_000_000,
+    5_000_000,
+    10_000_000,
+    50_000_000,
+]
+
+# Abbreviated labels used in location names (index 0 = tier 1).
+CARGO_TIER_LABELS = [
+    "1k", "5k", "10k", "50k", "100k", "500k", "1M", "5M", "10M", "50M",
+]
 
 # Per-cargo YAML key suffixes match the lowercase, underscored cargo name.
 # e.g. "Iron Ore" → option key "iron_ore_tiered_mission_count"
@@ -29,10 +45,9 @@ def _cargo_option_key(cargo: str) -> str:
     return cargo.lower().replace(" ", "_") + "_tiered_mission_count"
 
 # Pre-registered tiered location names (cargo × max tiers).
-# Location names take the form "Transport <Cargo> <N>" where N is 1-based.
-# The hardcoded "Transport 1 unit of X" locations remain under their original names.
+# Location names take the form "Transport <label> units of <Cargo>".
 _TIERED_LOCATION_NAMES: List[str] = [
-    f"Transport {cargo} {tier}"
+    f"Transport {CARGO_TIER_LABELS[tier - 1]} units of {cargo}"
     for cargo in CARGO_TYPES
     for tier in range(1, CARGO_TIER_MAX + 1)
 ]
@@ -194,8 +209,8 @@ def _get_tiered_mission_count(world: "OpenTTDWorld", cargo: str) -> int:
 def get_tiered_missions(world: "OpenTTDWorld") -> List[Dict[str, object]]:
     """Generate tiered transport missions for all cargo types.
 
-    Tier N location name: "Transport <Cargo> <N>"
-    Tier 1 amount = CARGO_TIER_BASE (1 000); each subsequent tier is ×10.
+    Tier N location name: "Transport <amount> units of <Cargo>"
+    Amounts follow CARGO_TIER_AMOUNTS (1k, 5k, 10k, 50k, 100k, 500k, 1M, 5M, 10M, 50M).
     The count per cargo comes from per-cargo YAML option, falling back to
     global_tiered_mission_count.
     """
@@ -204,8 +219,9 @@ def get_tiered_missions(world: "OpenTTDWorld") -> List[Dict[str, object]]:
         tier_count = _get_tiered_mission_count(world, cargo)
         tier_count = max(0, min(tier_count, CARGO_TIER_MAX))
         for tier in range(1, tier_count + 1):
-            amount = CARGO_TIER_BASE * (10 ** (tier - 1))
-            location = f"Transport {cargo} {tier}"
+            amount = CARGO_TIER_AMOUNTS[tier - 1]
+            label = CARGO_TIER_LABELS[tier - 1]
+            location = f"Transport {label} units of {cargo}"
             tiered.append({
                 "location": location,
                 "description": f"Transport {amount:,} units of {cargo}",
@@ -237,13 +253,20 @@ def get_cargo_vehicle_missions(world: "OpenTTDWorld") -> List[Dict[str, object]]
     elif count >= len(CARGO_VEHICLE_COMBINATIONS):
         selected = list(CARGO_VEHICLE_COMBINATIONS)
     else:
-        selected = world.random.sample(CARGO_VEHICLE_COMBINATIONS, count)
+        # Use a stable RNG seeded from the multiworld seed + player so this
+        # function produces the same selection regardless of call order.
+        # world.random state depends on call sequence; Universal Tracker
+        # calls generation methods in a different order, so using world.random
+        # directly would produce a different sample in UT than in original gen.
+        seed_str = f"{world.multiworld.seed_name}|cv|{world.player}"
+        rng = py_random.Random(seed_str)
+        selected = rng.sample(CARGO_VEHICLE_COMBINATIONS, count)
 
     result = [
         {
             "location":    f"Transport {cargo} by {vdisp}",
             "description": f"Transport 1 unit of {cargo} using a {vdisp}",
-            "type":        "transport",
+            "type":        "transport_by_vehicle",
             "cargo":       cargo,
             "unit":        "units",
             "amount":      1,
@@ -278,26 +301,59 @@ class OpenTTDLocation(Location):
 def create_all_locations(world: OpenTTDWorld) -> List[OpenTTDLocation]:
     overworld = Region("Overworld", world.player, world.multiworld)
     world.multiworld.regions += [overworld]
+
+    # When UT is running a fake generation, create ALL possible locations so that
+    # multiworld.get_location() never throws for any pre-registered location ID.
+    # (UT checks item.location against the class-level LOCATION_NAME_TO_ID which
+    # has every possible ID; if the location wasn't created, get_location raises
+    # KeyError which UT catches and misreports as "Item name X not able to be created".)
+    is_ut = getattr(world.multiworld, "generation_is_fake", False)
+
     for name in MISSIONS:
         overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
-    for mission in get_tiered_missions(world):
-        name = mission["location"]
-        overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
-        # Create a hidden event location for each tier so rules can gate the next tier.
 
-        # Event locations have id=None and are invisible to the player.
-        cargo = mission["cargo"]
-        tier = mission["tier"]
-        event_loc_name = f"Transport {cargo} {tier} Complete"
-        event_item_name = f"Transport {cargo} {tier} Done"
-        event_loc = OpenTTDLocation(world.player, event_loc_name, None, overworld)
-        event_item = OpenTTDItem(event_item_name, ItemClassification.progression, None, world.player)
-        event_loc.place_locked_item(event_item)
-        overworld.locations.append(event_loc)
-    for mission in get_cargo_vehicle_missions(world):
-        name = mission["location"]
-        overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
-    for shop in get_shop_definitions(world):
-        name = shop["location"]
-        overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
+    if is_ut:
+        # Create every pre-registered tiered location + its event location.
+        for cargo in CARGO_TYPES:
+            for tier in range(1, CARGO_TIER_MAX + 1):
+                label = CARGO_TIER_LABELS[tier - 1]
+                loc_name = f"Transport {label} units of {cargo}"
+                overworld.locations.append(OpenTTDLocation(world.player, loc_name, LOCATION_NAME_TO_ID[loc_name], overworld))
+                event_loc_name = f"Transport {label} units of {cargo} Complete"
+                event_item_name = f"Transport {label} units of {cargo} Done"
+                event_loc = OpenTTDLocation(world.player, event_loc_name, None, overworld)
+                event_item = OpenTTDItem(event_item_name, ItemClassification.progression, None, world.player)
+                event_loc.place_locked_item(event_item)
+                overworld.locations.append(event_loc)
+        # Create every pre-registered CV location.
+        for name in _ALL_CARGO_VEHICLE_LOCATION_NAMES:
+            overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
+        # Create all pre-registered shop slots.
+        for index in range(1, MAX_SHOP_SLOTS + 1):
+            name = f"Purchase Shop {index}"
+            overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
+    else:
+        for mission in get_tiered_missions(world):
+            name = mission["location"]
+            overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
+            # Create a hidden event location for each tier so rules can gate the next tier.
+
+            # Event locations have id=None and are invisible to the player.
+            cargo = mission["cargo"]
+            tier = mission["tier"]
+            amount = CARGO_TIER_AMOUNTS[tier - 1]
+            label = CARGO_TIER_LABELS[tier - 1]
+            event_loc_name = f"Transport {label} units of {cargo} Complete"
+            event_item_name = f"Transport {label} units of {cargo} Done"
+            event_loc = OpenTTDLocation(world.player, event_loc_name, None, overworld)
+            event_item = OpenTTDItem(event_item_name, ItemClassification.progression, None, world.player)
+            event_loc.place_locked_item(event_item)
+            overworld.locations.append(event_loc)
+        for mission in get_cargo_vehicle_missions(world):
+            name = mission["location"]
+            overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
+        for shop in get_shop_definitions(world):
+            name = shop["location"]
+            overworld.locations.append(OpenTTDLocation(world.player, name, LOCATION_NAME_TO_ID[name], overworld))
+
 

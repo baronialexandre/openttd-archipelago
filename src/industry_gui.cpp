@@ -557,7 +557,7 @@ public:
 
 				if (_game_mode != GM_EDITOR) {
 					if (AP_IsActive() && Industry::GetIndustryTypeCount(this->selected_type) < 10) {
-						DrawString(ir, "Cost: FREE (AP - less than 10 exist)", TC_GREEN);
+						DrawString(ir, "Free", TC_GREEN);
 					} else {
 						DrawString(ir, GetString(STR_FUND_INDUSTRY_INDUSTRY_BUILD_COST, indsp->GetConstructionCost()));
 					}

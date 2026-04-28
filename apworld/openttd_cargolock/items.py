@@ -221,17 +221,17 @@ DEFAULT_ITEM_CLASSIFICATION = {
     "Progressive Aircrafts": ItemClassification.progression,
     "Progressive Ships": ItemClassification.progression,
     "Progressive Shop Upgrade": ItemClassification.progression,
-    "Passengers": ItemClassification.progression,
-    "Mail": ItemClassification.progression,
-    "Coal": ItemClassification.progression,
-    "Oil": ItemClassification.progression,
-    "Livestock": ItemClassification.progression,
-    "Goods": ItemClassification.progression,
-    "Grain": ItemClassification.progression,
-    "Wood": ItemClassification.progression,
-    "Iron Ore": ItemClassification.progression,
-    "Steel": ItemClassification.progression,
-    "Valuables": ItemClassification.progression,
+    "Passengers": ItemClassification.progression | ItemClassification.useful,
+    "Mail": ItemClassification.progression | ItemClassification.useful,
+    "Coal": ItemClassification.progression | ItemClassification.useful,
+    "Oil": ItemClassification.progression | ItemClassification.useful,
+    "Livestock": ItemClassification.progression | ItemClassification.useful,
+    "Goods": ItemClassification.progression | ItemClassification.useful,
+    "Grain": ItemClassification.progression | ItemClassification.useful,
+    "Wood": ItemClassification.progression | ItemClassification.useful,
+    "Iron Ore": ItemClassification.progression | ItemClassification.useful,
+    "Steel": ItemClassification.progression | ItemClassification.useful,
+    "Valuables": ItemClassification.progression | ItemClassification.useful,
     "Cash Injection": ItemClassification.filler,
     "Choo chooo!": ItemClassification.filler
 }
@@ -240,7 +240,7 @@ for colour_item in COMPANY_COLOUR_ITEMS:
     DEFAULT_ITEM_CLASSIFICATION[colour_item] = ItemClassification.filler
 
 for utility_item in UTILITY_ITEMS:
-    DEFAULT_ITEM_CLASSIFICATION[utility_item] = ItemClassification.progression
+    DEFAULT_ITEM_CLASSIFICATION[utility_item] = ItemClassification.progression | ItemClassification.useful
 
 class OpenTTDItem(Item):
     game = "OpenTTD Cargolock"
@@ -322,7 +322,10 @@ def create_all_items(world: OpenTTDWorld) -> None:
         starting_cargo_type = requested_starting_cargo_type
     else:
         # Force a compatible fallback to avoid unwinnable starts.
-        fallback_pool = [c for c in available_cargo_types if c in allowed_cargo]
+        # Exclude Goods and Steel (secondary cargos requiring prerequisites).
+        fallback_pool = [c for c in available_cargo_types if c in allowed_cargo and c not in {"Goods", "Steel"}]
+        if not fallback_pool:
+            fallback_pool = [c for c in available_cargo_types if c in allowed_cargo]
         starting_cargo_type = world.random.choice(fallback_pool)
 
     world.multiworld.push_precollected(world.create_item(starting_cargo_type))

@@ -20,6 +20,7 @@
 #include "querystring_gui.h"
 #include "textbuf_gui.h"
 #include "fontcache.h"
+#include "cargotype.h"
 #include "currency.h"
 #include "fios.h"
 #include "network/network.h"
@@ -463,8 +464,9 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_status_widgets = 
 };
 
 struct ArchipelagoStatusWindow : public Window {
-	APState last_state  = APState::DISCONNECTED;
-	bool    last_has_sd = false;
+	APState  last_state  = APState::DISCONNECTED;
+	bool     last_has_sd = false;
+	uint32_t last_gen    = UINT32_MAX;
 
 	ArchipelagoStatusWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc) {
 		this->CreateNestedTree();
@@ -504,7 +506,8 @@ struct ArchipelagoStatusWindow : public Window {
 		if (_ap_client == nullptr) return;
 		APState s = _ap_client->GetState();
 		bool    h = _ap_client->HasSlotData();
-		bool    d = _ap_status_dirty.exchange(false);
+		uint32_t g = _ap_status_generation.load(std::memory_order_relaxed);
+		bool     d = (g != last_gen); last_gen = g;
 		if (s != last_state || h != last_has_sd || d) {
 			last_state = s; last_has_sd = h;
 			this->SetDirty();
@@ -624,53 +627,190 @@ static std::string AP_FormatMoneyCompact(int64_t amount)
 	return num + cs.suffix;
 }
 
+/** Resolve a cargo AP name (e.g. "Coal") to its CargoSpec, or nullptr if not found. */
+static const CargoSpec *AP_GetCargoSpecByName(const std::string &name)
+{
+	if (name.empty()) return nullptr;
+	std::string lower = name;
+	for (char &c : lower) c = (char)tolower((unsigned char)c);
+	for (const CargoSpec *cs : _sorted_cargo_specs) {
+		if (!cs->IsValid()) continue;
+		std::string cs_name = GetString(cs->name);
+		for (char &c : cs_name) c = (char)tolower((unsigned char)c);
+		if (cs_name == lower) return cs;
+	}
+	return nullptr;
+}
+
 struct ArchipelagoMissionsWindow : public Window {
-	int           row_height    = 0;      /* computed in constructor from font height */
-	int           max_line_px   = 0;      /* width in pixels of the longest line */
-	std::vector<const APMission *> visible_missions;
+	/* A single display row — either a section/cargo header or a mission entry. */
+	struct MissionRow {
+		enum Type { SECTION_HEADER, CARGO_HEADER, MISSION } type;
+		std::string      text;       ///< header display text
+		const APMission *mission;    ///< MISSION rows only
+		std::string      label;      ///< "by Train" / "by Ship" / "1k" / description
+		CargoType        cargo_type = INVALID_CARGO; ///< cargo icon (CARGO_HEADER only)
+		int64_t          delivered  = 0;             ///< units delivered so far (CARGO_HEADER only)
+	};
+
+	int row_height  = 0;
+	int max_line_px = 0;
+	std::vector<MissionRow> rows;
 	Scrollbar *scrollbar  = nullptr;
 	Scrollbar *hscrollbar = nullptr;
+	uint32_t  last_gen    = UINT32_MAX;
 
-	void RebuildVisibleList() {
-		visible_missions.clear();
+	static std::string VehicleKeyDisplay(const std::string &key)
+	{
+		if (key == "train")        return "Train";
+		if (key == "road_vehicle") return "Road Vehicle";
+		if (key == "ship")         return "Ship";
+		if (key == "aircraft")     return "Aircraft";
+		return key;
+	}
+
+	static int VehicleKeyOrder(const std::string &key)
+	{
+		if (key == "train")        return 0;
+		if (key == "road_vehicle") return 1;
+		if (key == "ship")         return 2;
+		if (key == "aircraft")     return 3;
+		return 4;
+	}
+
+	static std::string FmtNum(int64_t v)
+	{
+		if (v >= 1000000 && v % 1000000 == 0) return fmt::format("{}M", v / 1000000);
+		if (v >= 1000000)                      return fmt::format("{:.1f}M", v / 1000000.0);
+		if (v >= 1000    && v % 1000    == 0)  return fmt::format("{}k", v / 1000);
+		if (v >= 1000)                         return fmt::format("{:.1f}k", v / 1000.0);
+		return fmt::format("{}", v);
+	}
+
+	void RebuildRows()
+	{
+		rows.clear();
 		const APSlotData &sd = AP_GetSlotData();
+
+		/* Bucket each mission into: general, per-cargo vehicle, per-cargo tiered. */
+		static const char * const CARGO_ORDER[] = {
+			"Passengers", "Mail", "Valuables", "Coal", "Oil", "Livestock",
+			"Grain", "Wood", "Iron Ore", "Steel", "Goods",
+		};
+
+		std::map<std::string, std::vector<const APMission *>> cv_map;   /* transport_by_vehicle */
+		std::map<std::string, std::vector<const APMission *>> tier_map; /* transport */
+		std::vector<const APMission *> general;
+
 		for (const APMission &m : sd.missions) {
-			visible_missions.push_back(&m);
+			if (m.type == "transport_by_vehicle") {
+				cv_map[m.cargo].push_back(&m);
+			} else if (m.type == "transport" && !m.cargo.empty()) {
+				tier_map[m.cargo].push_back(&m);
+			} else {
+				general.push_back(&m);
+			}
 		}
-		if (this->scrollbar) {
-			this->scrollbar->SetCount((int)visible_missions.size());
+
+		/* Sort vehicle missions by canonical vehicle order within each cargo. */
+		for (auto &[cargo, vec] : cv_map) {
+			std::sort(vec.begin(), vec.end(), [](const APMission *a, const APMission *b) {
+				return VehicleKeyOrder(a->vehicle_key) < VehicleKeyOrder(b->vehicle_key);
+			});
 		}
-		/* Compute max line pixel width so the horizontal scrollbar range is correct */
-		max_line_px = 0;
-		for (const APMission *m : visible_missions) {
-			std::string prefix = m->completed ? "[X] " : "[ ] ";
-			std::string mission_num;
+
+		/* Sort tiered missions ascending by amount. */
+		for (auto &[cargo, vec] : tier_map) {
+			std::sort(vec.begin(), vec.end(), [](const APMission *a, const APMission *b) {
+				return a->amount < b->amount;
+			});
+		}
+
+		/* ── General section ──────────────────────────────────────────────── */
+		if (!general.empty()) {
+			rows.push_back({ MissionRow::SECTION_HEADER, "— Missions —", nullptr, "" });
+			for (const APMission *m : general) {
+				std::string lbl = m->description;
+				if (m->named_entity.tile != UINT32_MAX) lbl += " \xe2\x86\x91";
+				rows.push_back({ MissionRow::MISSION, "", m, std::move(lbl) });
+			}
+		}
+
+		/* ── Per-cargo sections ───────────────────────────────────────────── */
+		for (const char *cargo : CARGO_ORDER) {
+			auto vit = cv_map.find(cargo);
+			auto tit = tier_map.find(cargo);
+			bool has_v = vit != cv_map.end()   && !vit->second.empty();
+			bool has_t = tit != tier_map.end() && !tit->second.empty();
+			if (!has_v && !has_t) continue;
+
 			{
-				const std::string &loc = m->location;
-				auto last_us = loc.rfind('_');
-				if (last_us != std::string::npos && last_us + 1 < loc.size()) {
-					mission_num = " #" + loc.substr(last_us + 1);
+				const CargoSpec *cs = AP_GetCargoSpecByName(cargo);
+				CargoType ct = (cs != nullptr) ? (CargoType)cs->Index() : INVALID_CARGO;
+				int64_t delivered = has_t ? tit->second[0]->current_value : 0;
+				MissionRow hdr;
+				hdr.type       = MissionRow::CARGO_HEADER;
+				hdr.text       = fmt::format("— {} —", cargo);
+				hdr.mission    = nullptr;
+				hdr.label      = "";
+				hdr.cargo_type = ct;
+				hdr.delivered  = delivered;
+				rows.push_back(std::move(hdr));
+			}
+
+			/* Vehicle missions first (each is "tier 0" — just deliver 1 unit by that mode). */
+			if (has_v) {
+				for (const APMission *m : vit->second) {
+					rows.push_back({ MissionRow::MISSION, "", m,
+					    fmt::format("by {}", VehicleKeyDisplay(m->vehicle_key)) });
 				}
 			}
-			std::string line = prefix + mission_num + " - " + m->description;
-			int w = GetStringBoundingBox(line).width;
+			/* Tiered volume missions in ascending order. */
+			if (has_t) {
+				for (const APMission *m : tit->second) {
+					rows.push_back({ MissionRow::MISSION, "", m, FmtNum(m->amount) });
+				}
+			}
+		}
+
+		/* Compute max line pixel width for hscrollbar range. */
+		const int icon_slot = (int)GetLargestCargoIconSize().width + 4;
+		max_line_px = 0;
+		for (const auto &row : rows) {
+			std::string line;
+			if (row.type == MissionRow::CARGO_HEADER) {
+				line = row.text;
+				if (row.delivered > 0) line += fmt::format("  {}", FmtNum(row.delivered));
+			} else if (row.type == MissionRow::SECTION_HEADER) {
+				line = row.text;
+			} else if (row.mission) {
+				line = (row.mission->completed ? "[X] " : "[ ] ") + row.label;
+			}
+			/* Mission rows are indented 8 px; cargo headers append icon slot after text. */
+			int indent = (row.type == MissionRow::MISSION) ? 8 : 0;
+			int icon_reserve = (row.type == MissionRow::CARGO_HEADER && IsValidCargoType(row.cargo_type)) ? icon_slot : 0;
+			int w = GetStringBoundingBox(line).width + indent + icon_reserve;
 			if (w > max_line_px) max_line_px = w;
 		}
+
+		if (this->scrollbar) this->scrollbar->SetCount((int)rows.size());
 		UpdateHScrollbar();
 		this->SetDirty();
 	}
 
-	void UpdateHScrollbar() {
+	void UpdateHScrollbar()
+	{
 		if (!this->hscrollbar) return;
 		NWidgetBase *nw = this->GetWidget<NWidgetBase>(WAPM_LIST);
 		int visible_w = (nw != nullptr) ? (int)nw->current_x - 8 : 460;
-		int total     = std::max(max_line_px + 16, visible_w);
+		int total = std::max(max_line_px + 16, visible_w);
 		this->hscrollbar->SetCount(total);
 		this->hscrollbar->SetCapacity(visible_w);
 	}
 
-	ArchipelagoMissionsWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc) {
-		this->row_height = GetCharacterHeight(FS_NORMAL) + 3; /* +3px vertical padding */
+	ArchipelagoMissionsWindow(WindowDesc &desc, WindowNumber wnum) : Window(desc)
+	{
+		this->row_height = GetCharacterHeight(FS_NORMAL) + 3;
 		this->CreateNestedTree();
 		this->scrollbar  = this->GetScrollbar(WAPM_SCROLLBAR);
 		this->scrollbar->SetStepSize(1);
@@ -679,134 +819,85 @@ struct ArchipelagoMissionsWindow : public Window {
 		this->FinishInitNested(wnum);
 		this->resize.step_height = row_height;
 		this->resize.step_width  = 1;
-		RebuildVisibleList();
+		RebuildRows();
 	}
 
-	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override {
-		if (_ap_status_dirty.exchange(false)) {
-			RebuildVisibleList();
-			this->SetDirty();
+	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
+	{
+		uint32_t g = _ap_status_generation.load(std::memory_order_relaxed);
+		if (g != last_gen) { last_gen = g; RebuildRows(); this->SetDirty(); }
+	}
+
+	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override
+	{
+		if (widget != WAPM_LIST) return;
+		int rh = GetCharacterHeight(FS_NORMAL) + 3;
+		const Rect &rect = this->GetWidget<NWidgetBase>(WAPM_LIST)->GetCurrentRect();
+		int idx = this->scrollbar->GetPosition() + (pt.y - rect.top - 2) / rh;
+		if (idx < 0 || idx >= (int)rows.size()) return;
+		const auto &mr = rows[idx];
+		if (mr.type == MissionRow::MISSION && mr.mission &&
+		    mr.mission->named_entity.tile != UINT32_MAX) {
+			ScrollMainWindowToTile(TileIndex{mr.mission->named_entity.tile});
 		}
 	}
 
-	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override {
-		switch (widget) {
-			case WAPM_LIST: {
-				/* Click on a mission row — if it has a named entity (town/industry),
-				 * scroll the main viewport to that location on the map. */
-				int rh    = GetCharacterHeight(FS_NORMAL) + 3;
-				const Rect &r = this->GetWidget<NWidgetBase>(WAPM_LIST)->GetCurrentRect();
-				int row   = this->scrollbar->GetPosition() + (pt.y - r.top - 2) / rh;
-				if (row < 0 || row >= (int)visible_missions.size()) break;
-				const APMission *m = visible_missions[row];
-				if (m->named_entity.tile != UINT32_MAX) {
-					ScrollMainWindowToTile(TileIndex{m->named_entity.tile});
-				}
-				break;
-			}
-		}
-	}
-
-	void DrawWidget(const Rect &r, WidgetID widget) const override {
+	void DrawWidget(const Rect &r, WidgetID widget) const override
+	{
 		if (widget != WAPM_LIST) return;
 
-		/* Recompute row height at draw time — GetCharacterHeight returns the
-		 * correct scaled value for the current UI zoom level.  Using the cached
-		 * constructor value causes rows to overlap at UI scale >=2. */
-		int rh = GetCharacterHeight(FS_NORMAL) + 3;
-
-		int y = r.top + 2;
+		int rh    = GetCharacterHeight(FS_NORMAL) + 3;
+		int y     = r.top + 2;
 		int first = this->scrollbar->GetPosition();
 		int last  = first + (r.Height() / rh) + 1;
 
-		for (int i = first; i < last && i < (int)visible_missions.size(); i++) {
-			const APMission *m = visible_missions[i];
-
-			TextColour tc = m->completed ? TC_DARK_GREEN : TC_WHITE;
-
-			/* Format: [X] #042 - Description  (current/target) */
-			std::string prefix = m->completed ? "[X] " : "[ ] ";
-			/* Extract mission number from location string (e.g. "Mission_Easy_042" -> "#042") */
-			std::string mission_num;
-			{
-				const std::string &loc = m->location;
-				auto last_us = loc.rfind('_');
-				if (last_us != std::string::npos && last_us + 1 < loc.size()) {
-					mission_num = " #" + loc.substr(last_us + 1);
-				}
-			}
-
-			/* Build progress string for incomplete missions.
-			 * Named missions and maintain missions always show progress (even 0)
-			 * so the player knows the tracker is live. */
-			bool is_named    = (m->type == "passengers_to_town" || m->type == "mail_to_town" ||
-			                    m->type == "cargo_from_industry" || m->type == "cargo_to_industry");
-			bool is_maintain = (m->type == "maintain_75" ||
-			                    m->type.find("maintain") != std::string::npos);
-			std::string progress_str;
-			if (!m->completed && m->amount > 0 && (m->current_value > 0 || is_named || is_maintain)) {
-				if (is_maintain) {
-					/* Show as "X/Y months" — never as money */
-					progress_str = fmt::format("  ({}/{} months)", m->current_value, m->amount);
-				} else {
-					/* Detect money missions by unit — only £ and £/month, NOT plain "months" */
-					bool is_money = (m->unit == "\xC2\xA3" || m->unit == "\xC2\xA3/month" ||
-					                 m->unit == "£" || m->unit == "£/month" ||
-					                 m->unit.find("/month") != std::string::npos);
-					if (is_money) {
-						progress_str = fmt::format("  ({}/{})",
-						    AP_FormatMoneyCompact(m->current_value),
-						    AP_FormatMoneyCompact(m->amount));
-					} else {
-						auto fmt_num = [](int64_t v) -> std::string {
-							if (v >= 1000000) return fmt::format("{:.1f}M", v / 1000000.0);
-							if (v >= 1000)    return fmt::format("{}k", v / 1000);
-							return fmt::format("{}", v);
-						};
-						progress_str = fmt::format("  ({}/{})", fmt_num(m->current_value), fmt_num(m->amount));
-					}
-				}
-			}
-
-			/* Replace hardcoded £ in description with the current game currency
-			 * prefix so mission text matches the player's chosen currency
-			 * (e.g. USD shows $ instead of £). */
-			std::string desc = m->description;
-			{
-				const CurrencySpec &cs = GetCurrency();
-				std::string pound_utf8 = "\xC2\xA3"; /* UTF-8 encoding of £ */
-				std::string replacement = cs.prefix.empty() ? std::string(cs.suffix) : std::string(cs.prefix);
-				/* Only replace if the game isn't using GBP (prefix "£") */
-				if (replacement != pound_utf8 && replacement != "\xC2\xA3") {
-					size_t pos = 0;
-					while ((pos = desc.find(pound_utf8, pos)) != std::string::npos) {
-						desc.replace(pos, pound_utf8.size(), replacement);
-						pos += replacement.size();
-					}
-				}
-			}
-
-			/* For named missions (town/industry assigned), append a map-pin symbol
-			 * to hint that clicking this row will scroll the viewport there. */
-			std::string nav_hint;
-			if (m->named_entity.tile != UINT32_MAX) {
-				nav_hint = " \xe2\x86\x91"; /* ↑ unicode arrow — visual cue to scroll map */
-			}
-			std::string line = prefix + mission_num + " - " + desc + progress_str + nav_hint;
-
+		for (int i = first; i < last && i < (int)rows.size(); i++) {
+			const auto &row = rows[i];
 			int x_off = this->hscrollbar ? -this->hscrollbar->GetPosition() : 0;
-			DrawString(r.left + 4 + x_off, r.right + max_line_px, y, line, tc, SA_LEFT | SA_FORCE);
+
+			if (row.type == MissionRow::SECTION_HEADER) {
+				DrawString(r.left + 4 + x_off, r.right + max_line_px, y,
+				    row.text, TC_YELLOW, SA_LEFT | SA_FORCE);
+			} else if (row.type == MissionRow::CARGO_HEADER) {
+				std::string header = row.text;
+				if (row.delivered > 0) header += fmt::format("  {}", FmtNum(row.delivered));
+				int text_left = r.left + 4 + x_off;
+				int text_right = DrawString(text_left, r.right + max_line_px, y, header, TC_ORANGE, SA_LEFT | SA_FORCE);
+				if (IsValidCargoType(row.cargo_type)) {
+					const CargoSpec *cs = CargoSpec::Get(row.cargo_type);
+					SpriteID spr = cs->GetCargoIcon();
+					if (spr != 0) {
+						Dimension max_d = GetLargestCargoIconSize();
+						Dimension d = GetSpriteSize(spr);
+						int slot_left = text_right + 4;
+						int slot_right = slot_left + (int)max_d.width;
+						DrawSprite(spr, PAL_NONE,
+							CentreBounds(slot_left, slot_right, d.width),
+							CentreBounds(y, y + rh, d.height));
+					}
+				}
+			} else {
+				const APMission *m = row.mission;
+				if (!m) { y += rh; continue; }
+
+				std::string line = (m->completed ? "[X] " : "[ ] ") + row.label;
+				TextColour tc = m->completed ? TC_DARK_GREEN : TC_WHITE;
+				DrawString(r.left + 4 + 8 + x_off, r.right + max_line_px, y,
+				    line, tc, SA_LEFT | SA_FORCE);
+			}
 			y += rh;
 			if (y > r.bottom) break;
 		}
 	}
 
-	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override {
+	void OnScrollbarScroll([[maybe_unused]] WidgetID widget) override
+	{
 		UpdateHScrollbar();
 		this->SetDirty();
 	}
 
-	void OnResize() override {
+	void OnResize() override
+	{
 		if (this->scrollbar) {
 			int rh = GetCharacterHeight(FS_NORMAL) + 3;
 			this->scrollbar->SetCapacity(
@@ -820,7 +911,7 @@ struct ArchipelagoMissionsWindow : public Window {
 	{
 		if (widget == WAPM_LIST) {
 			resize.height = row_height;
-			resize.width = 1;
+			resize.width  = 1;
 			size.height = std::max(size.height, (uint)(row_height * 15));
 		}
 	}
@@ -865,10 +956,14 @@ static constexpr std::initializer_list<NWidgetPart> _nested_ap_inventory_widgets
 	EndContainer(),
 };
 
-/** All cargo types in display order (matches apworld CARGO_TYPES). */
+/** All cargo types in display order. */
 static const char * const AP_CARGO_ORDER[] = {
-	"Passengers", "Mail", "Coal", "Oil", "Livestock",
-	"Goods", "Grain", "Wood", "Iron Ore", "Steel", "Valuables",
+	"Passengers", "Mail", "Valuables", "Coal", "Oil", "Livestock",
+	"Grain", "Wood", "Iron Ore", "Steel", "Goods",
+};
+/** Utility items in display order. */
+static const char * const AP_UTILITY_ORDER[] = {
+	"Bridges", "Tunnels", "Canals", "Terraforming",
 };
 static const char * const AP_VEHICLE_ORDER[] = {
 	"Progressive Trains", "Progressive Road Vehicles",
@@ -877,16 +972,18 @@ static const char * const AP_VEHICLE_ORDER[] = {
 
 struct ArchipelagoInventoryWindow : public Window {
 	struct InventoryRow {
-		enum Type { HEADER, VEHICLE, VEHICLE_TIER, VEHICLE_NAME, CARGO, FILLER } type;
+		enum Type { HEADER, VEHICLE, VEHICLE_TIER, VEHICLE_NAME, CARGO, UTILITY, FILLER } type;
 		std::string text;
 		bool owned = false;
 		int  count = 0;
+		CargoType cargo_type = INVALID_CARGO; ///< resolved CargoType for CARGO rows
 	};
 
 	std::vector<InventoryRow> rows;
 	Scrollbar *scrollbar = nullptr;
 	int row_height = 0;
 	std::map<std::string, bool> expanded; /* vehicle item name → fold state */
+	uint32_t last_gen = UINT32_MAX;
 
 	void RebuildRows()
 	{
@@ -936,7 +1033,24 @@ struct ArchipelagoInventoryWindow : public Window {
 		rows.push_back({ InventoryRow::HEADER, fmt::format("— Cargo ({}/{}) —", unlocked_cargo, (int)std::size(AP_CARGO_ORDER)) });
 		for (const char *name : AP_CARGO_ORDER) {
 			bool owned = counts.count(name) > 0;
-			rows.push_back({ InventoryRow::CARGO, name, owned, owned ? 1 : 0 });
+			const CargoSpec *cs = AP_GetCargoSpecByName(name);
+			CargoType ct = (cs != nullptr) ? (CargoType)cs->Index() : INVALID_CARGO;
+			rows.push_back({ InventoryRow::CARGO, name, owned, owned ? 1 : 0, ct });
+		}
+
+		/* ── Utilities ──────────────────────────────────────────── */
+		{
+			const APSlotData &sd = AP_GetSlotData();
+			const bool any_locked = sd.lock_bridges || sd.lock_tunnels || sd.lock_canals || sd.lock_terraforming;
+			if (any_locked) {
+				const bool locked_arr[4] = { sd.lock_bridges, sd.lock_tunnels, sd.lock_canals, sd.lock_terraforming };
+				rows.push_back({ InventoryRow::HEADER, "— Utilities —" });
+				for (int i = 0; i < 4; i++) {
+					if (!locked_arr[i]) continue;
+					bool owned = counts.count(AP_UTILITY_ORDER[i]) > 0;
+					rows.push_back({ InventoryRow::UTILITY, AP_UTILITY_ORDER[i], owned, owned ? 1 : 0 });
+				}
+			}
 		}
 
 		/* ── Filler ────────────────────────────────────────────── */
@@ -973,10 +1087,8 @@ struct ArchipelagoInventoryWindow : public Window {
 
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
 	{
-		if (_ap_status_dirty.exchange(false)) {
-			RebuildRows();
-			this->SetDirty();
-		}
+		uint32_t g = _ap_status_generation.load(std::memory_order_relaxed);
+		if (g != last_gen) { last_gen = g; RebuildRows(); this->SetDirty(); }
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override
@@ -1021,6 +1133,26 @@ struct ArchipelagoInventoryWindow : public Window {
 					break;
 
 				case InventoryRow::CARGO: {
+					TextColour tc = row.owned ? TC_GREEN : TC_GREY;
+					std::string marker = row.owned ? "[X]" : "[ ]";
+					std::string line = marker + " " + row.text;
+					int text_right = DrawString(r.left + 8, r.right - 4, y, line, tc, SA_LEFT | SA_FORCE);
+					if (IsValidCargoType(row.cargo_type)) {
+						const CargoSpec *cs = CargoSpec::Get(row.cargo_type);
+						SpriteID spr = cs->GetCargoIcon();
+						if (spr != 0) {
+							Dimension max_d = GetLargestCargoIconSize();
+							Dimension d = GetSpriteSize(spr);
+							int slot_left = text_right + 4;
+							int slot_right = slot_left + (int)max_d.width;
+							DrawSprite(spr, PAL_NONE,
+								CentreBounds(slot_left, slot_right, d.width),
+								CentreBounds(y, y + rh, d.height));
+						}
+					}
+					break;
+				}
+				case InventoryRow::UTILITY: {
 					TextColour tc = row.owned ? TC_GREEN : TC_GREY;
 					std::string marker = row.owned ? "[X]" : "[ ]";
 					std::string line = marker + " " + row.text;
@@ -1131,10 +1263,11 @@ struct ArchipelagoShopWindow : public Window {
 	Scrollbar *scrollbar = nullptr;
 	int row_height = 0;
 	int selected_row = -1;
-	int last_visible_count = -1;
-	int last_total_shop_count = -1;
-	Money last_money = INT64_MIN;
-	int last_purchased_visible_count = -1;
+	int      last_visible_count = -1;
+	int      last_total_shop_count = -1;
+	Money    last_money = INT64_MIN;
+	int      last_purchased_visible_count = -1;
+	uint32_t last_gen = UINT32_MAX;
 
 	void RebuildRows()
 	{
@@ -1193,7 +1326,8 @@ struct ArchipelagoShopWindow : public Window {
 			if (AP_IsShopLocationPurchased(sd.shop_locations[i].location)) purchased_visible_count++;
 		}
 
-		const bool status_changed = _ap_status_dirty.exchange(false);
+		uint32_t g = _ap_status_generation.load(std::memory_order_relaxed);
+		const bool status_changed = (g != last_gen); last_gen = g;
 		if (status_changed ||
 		    visible_count != last_visible_count ||
 		    total_shop_count != last_total_shop_count ||

@@ -28,6 +28,22 @@ class OpenTTDWorld(World):
     topology_present = True
     ut_can_gen_without_yaml = True
 
+    def generate_early(self) -> None:
+        # When UT does a re-gen passthrough (via interpret_slot_data returning a dict),
+        # the returned options dict is stored in multiworld.re_gen_passthrough[game].
+        # Apply those values so the world generates identically to the original game:
+        # correct tiered mission counts, lock options, shop settings, etc.
+        re_gen = getattr(self.multiworld, "re_gen_passthrough", {}).get(self.game, {})
+        if not re_gen:
+            return
+        for key, value in re_gen.items():
+            opt = getattr(self.options, key, None)
+            if opt is not None and hasattr(opt, "value"):
+                try:
+                    opt.value = int(value)
+                except (TypeError, ValueError):
+                    pass
+
     def create_regions(self) -> None:
         locations.create_all_locations(self)
         
@@ -49,7 +65,7 @@ class OpenTTDWorld(World):
         Only options that affect the location pool or access rules are needed."""
         result = {
             "enable_shop": slot_data.get("enable_shop", 1),
-            "shop_slots":  len(slot_data.get("shop_locations", [])),
+            "shop_slots":  slot_data.get("shop_slots", len(slot_data.get("shop_locations") or [])),
             "shop_tiers": slot_data.get("shop_tiers", 5),
             "shop_cost_min": slot_data.get("shop_cost_min", 50000),
             "shop_cost_max": slot_data.get("shop_cost_max", 1000000),
@@ -100,6 +116,7 @@ class OpenTTDWorld(World):
             "starting_cash_bonus": self.options.starting_cash_bonus.value,
             "enable_shop": self.options.enable_shop.value,
             "reveal_shop_items": self.options.reveal_shop_items.value,
+            "shop_slots": self.options.shop_slots.value,
             "shop_tiers": shop_tiers,
             "shop_locations": shop_locations,
             "shop_cost_min": self.options.shop_cost_min.value,

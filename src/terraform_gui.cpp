@@ -170,6 +170,8 @@ struct TerraformToolbarWindow : Window {
 		/* Don't show the place object button when there are no objects to place. */
 		NWidgetStacked *show_object = this->GetWidget<NWidgetStacked>(WID_TT_SHOW_PLACE_OBJECT);
 		show_object->SetDisplayedPlane(ObjectClass::GetUIClassCount() != 0 ? 0 : SZSP_NONE);
+		/* Apply AP terraform lock state immediately on window open. */
+		this->OnInvalidateData();
 	}
 
 	void OnInvalidateData([[maybe_unused]] int data = 0, [[maybe_unused]] bool gui_scope = true) override

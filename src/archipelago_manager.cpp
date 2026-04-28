@@ -77,7 +77,10 @@
 #include "network/network.h"
 #include "network/network_func.h"
 #include "network/network_internal.h"
+#include "network/network_base.h"
+#include "network/network_server.h"
 #include "network/network_gui.h"
+#include "misc_cmd.h"
 #include "safeguards.h"
 
 #include <array>
@@ -178,7 +181,7 @@ static void AP_RefreshMoneyDisplays()
 	SetWindowDirty(WC_STATUS_BAR, 0);
 	SetWindowDirty(WC_MAIN_TOOLBAR, 0);
 	SetWindowClassesDirty(WC_ARCHIPELAGO);
-	_ap_status_dirty.store(true);
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 /** Snapshot of last-seen old_economy[0] values (for change detection) */
@@ -1030,6 +1033,7 @@ static bool        _ap_session_started             = false; ///< True once we've
 static bool        _ap_menu_connect_start_new      = true;  ///< Menu connect mode: true=start new world, false=load save
 static bool        _ap_menu_connect_multiplayer    = false; ///< Main-menu AP connect target: false=singleplayer, true=multiplayer.
 static bool        _ap_open_network_window_pending = false; ///< Open MP window after AP world enters GM_NORMAL.
+static bool        _ap_paused_for_client_join      = false; ///< True when we issued a pause waiting for a joining client to connect to AP.
 
 
 /* _ap_world_started_this_session is reset per-connection so that a
@@ -1072,8 +1076,8 @@ static void AP_ResetProgressStateForNewSlot()
 	AP_InitSessionStats();
 }
 
-/* Exposed for GUI polling */
-std::atomic<bool> _ap_status_dirty{ false };
+/* Exposed for GUI polling — monotonically increasing; each window tracks its own last-seen value */
+std::atomic<uint32_t> _ap_status_generation{ 0 };
 
 /* Public accessors */
 const APSlotData                   &AP_GetSlotData()           { return _ap_pending_sd; }
@@ -1129,7 +1133,7 @@ bool AP_PurchaseShopLocation(const std::string &location_name)
 	AP_SendCheckByName(location_name);
 	AP_ShowNews(fmt::format("Purchased {} for {}.", it->name, it->cost), APPrintColour::GREEN);
 	SetWindowClassesDirty(WC_ARCHIPELAGO);
-	_ap_status_dirty.store(true);
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 	return true;
 }
 
@@ -1235,7 +1239,7 @@ static void AP_OnSlotData(const APSlotData &sd)
 	AP_ResetCompanyUtilityUnlocks(_local_company);
 	AP_ApplyCompletedMissionRestore();
 	AP_ApplyPurchasedShopRestore();
-	_ap_status_dirty.store(true);
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 
 	/* Only auto-start world if we're on the main menu, start-new mode is selected,
 	 * and we haven't already started a world for this connection session. */
@@ -1278,7 +1282,7 @@ static void AP_OnItemReceived(const APItem &item)
 
 	/* Track every received item for the inventory window. */
 	_ap_received_item_counts[item.item_name]++;
-	_ap_status_dirty.store(true);
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 
 	/* Persist items_received_index after each new item so future reconnects
 	 * correctly mark these items as is_replay=true. */
@@ -1307,7 +1311,9 @@ static void AP_OnItemReceived(const APItem &item)
 			Command<CMD_AP_SET_UTILITY_UNLOCK>::Post(_local_company, (uint8_t)i, true);
 			if (!is_replay) AP_ShowNews("Infrastructure unlocked: " + item.item_name);
 			SetWindowClassesDirty(WC_ARCHIPELAGO);
-			_ap_status_dirty.store(true);
+			_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
+			/* Re-grey terraform/bridge/canal toolbar buttons immediately. */
+			InvalidateWindowClassesData(WC_SCEN_LAND_GEN, 0);
 			return;
 		}
 	}
@@ -1327,7 +1333,7 @@ static void AP_OnItemReceived(const APItem &item)
 		}
 		if (!is_replay) AP_ShowNews("Cargo type unlocked: " + item.item_name);
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
-		_ap_status_dirty.store(true);
+		_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 
@@ -1336,7 +1342,7 @@ static void AP_OnItemReceived(const APItem &item)
 			AP_ShowNews(fmt::format("Shop expanded: {}/{} locations visible.", AP_GetVisibleShopLocationCount(), _ap_pending_sd.shop_locations.size()));
 		}
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
-		_ap_status_dirty.store(true);
+		_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 
@@ -1383,23 +1389,31 @@ static void AP_OnConnected()
 	_settings_client.network.commands_per_frame_server = 512;
 	_settings_client.network.max_commands_in_queue     = 4096;
 
-	_ap_status_dirty.store(true);
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 static void AP_OnDisconnected(const std::string &reason)
 {
 	Debug(misc, 1, "[AP] Disconnected: {}", reason);
 	AP_WARN("Disconnected: " + reason);
+	/* Always reset world-start flags so a reconnect can trigger world generation. */
 	_ap_world_started_this_session = false;
 	_ap_pending_world_start = false;
-	_ap_session_started = false;
-	_ap_unlocked_cargo_types.fill(false);
-	for (int i = 0; i < 4; i++) _ap_utility_unlocked[i] = false;
-	AP_ResetCompanyUtilityUnlocks(_local_company);
-	_ap_unlocked_company_colours.clear();
+	/* Only reset in-game session state when NOT in GM_NORMAL.
+	 * If we're playing, this callback may be a stale ACK from a previous
+	 * session's Disconnect() call — AP_OnLeaveGame already cleaned up before
+	 * Disconnect() was called.  Resetting session state here would stop the
+	 * replay queue from draining and clear all unlock state mid-game. */
+	if (_game_mode != GM_NORMAL) {
+		_ap_session_started = false;
+		_ap_unlocked_cargo_types.fill(false);
+		for (int i = 0; i < 4; i++) _ap_utility_unlocked[i] = false;
+		AP_ResetCompanyUtilityUnlocks(_local_company);
+		_ap_unlocked_company_colours.clear();
+	}
 	if (_game_mode == GM_MENU) _ap_completed_mission_locations.clear();
 	AP_LOG("Session flags reset — next connect can start world");
-	_ap_status_dirty.store(true);
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 static void AP_OnPrint(const std::string &msg, APPrintColour colour)
@@ -1423,7 +1437,7 @@ static void AP_OnLocationsUpdated()
 		AP_ApplyPurchasedShopRestore();
 	}
 	SetWindowClassesDirty(WC_ARCHIPELAGO);
-	_ap_status_dirty.store(true);
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 
@@ -1638,7 +1652,7 @@ void AP_SetPurchasedShopLocationsStr(const std::string &s)
 	_ap_purchased_shop_locations.clear();
 	if (s.empty()) {
 		AP_ApplyPurchasedShopRestore();
-		_ap_status_dirty.store(true);
+		_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
 
@@ -1653,7 +1667,7 @@ void AP_SetPurchasedShopLocationsStr(const std::string &s)
 	}
 	if (!token.empty()) _ap_purchased_shop_locations.insert(token);
 	AP_ApplyPurchasedShopRestore();
-	_ap_status_dirty.store(true);
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 void AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out)
@@ -2071,7 +2085,7 @@ static void CheckMissions()
 
 	if (completed_this_pass > 0) {
 		SetWindowClassesDirty(WC_ARCHIPELAGO);
-		_ap_status_dirty.store(true);
+		_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
@@ -2080,18 +2094,32 @@ static void CheckMissions()
 void AP_OnLeaveGame()
 {
 	if (_ap_client == nullptr) return;
-	if (_ap_client->GetState() == APState::DISCONNECTED) return;
-	AP_OK("Left game; disconnecting from Archipelago.");
-	_ap_client->Disconnect();
+	AP_OK("Left game; returning to main menu — disconnecting and clearing AP state.");
+	/* Disconnect if still connected (may already be disconnected if the session dropped). */
+	if (_ap_client->GetState() != APState::DISCONNECTED) {
+		_ap_client->Disconnect();
+	}
+	/* Full progress reset so the next connection always starts clean, regardless of slot. */
+	AP_ResetProgressStateForNewSlot();
+	_ap_progress_slot_identity.clear();
 	_ap_session_started = false;
 	_ap_world_started_this_session = false;
-	_ap_starting_grants_applied_slot.clear();
 	_ap_pending_world_start = false;
-	_ap_pending_items.clear();
-	_ap_replay_queue.clear();
-	_ap_deferred_cmds.clear();
 	_ap_open_network_window_pending = false;
-	_ap_status_dirty.store(true);
+	_ap_paused_for_client_join = false;
+	_ap_unlocked_cargo_types.fill(false);
+	for (int i = 0; i < 4; i++) _ap_utility_unlocked[i] = false;
+	AP_ResetCompanyUtilityUnlocks(_local_company);
+	_ap_unlocked_company_colours.clear();
+	/* Reset per-company AP state (active flag, engine unlocks, airport tier).
+	 * _ap_company_ap_active is a persistent static array — if not cleared here,
+	 * the next session's first-tick setup sees the company already "AP active"
+	 * and silently skips, leaving _ap_session_started=false and items stranded
+	 * in _ap_pending_items forever (nothing appears in inventory). */
+	for (int i = 0; i < MAX_COMPANIES; i++) {
+		AP_ResetCompanyAPState(CompanyID(i));
+	}
+	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
@@ -2243,7 +2271,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 					AP_ShowNews("Starting cargo unlocked: " + std::string(CARGO_NAMES[_ap_pending_sd.starting_cargo_type]));
 					AP_OK("Starting cargo type unlocked: " + std::string(CARGO_NAMES[_ap_pending_sd.starting_cargo_type]));
 					SetWindowClassesDirty(WC_ARCHIPELAGO);
-					_ap_status_dirty.store(true);
+					_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 				}
 			}
 
@@ -2326,6 +2354,29 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			for (int i = 0; i < 3 && !_ap_deferred_cmds.empty(); i++) {
 				_ap_deferred_cmds.front()();
 				_ap_deferred_cmds.pop_front();
+			}
+		}
+
+		/* Pause once when a client joins who hasn't yet connected to AP.
+		 * The host must unpause manually once the joining client has connected.
+		 * The flag resets silently once all active clients have AP active,
+		 * so the next client join will trigger a fresh pause. */
+		if (_networking && _network_server && _ap_session_started && _game_mode == GM_NORMAL) {
+			bool any_without_ap = false;
+			for (const NetworkClientSocket *cs : NetworkClientSocket::Iterate()) {
+				if (cs->status != NetworkClientSocket::STATUS_ACTIVE) continue;
+				const NetworkClientInfo *ci = cs->GetInfo();
+				if (ci == nullptr) continue;
+				CompanyID cid = ci->client_playas;
+				if (!Company::IsValidID(cid)) continue; /* spectator — no AP needed */
+				if (!AP_IsCompanyAPActive(cid)) { any_without_ap = true; break; }
+			}
+			if (any_without_ap && !_ap_paused_for_client_join) {
+				_ap_paused_for_client_join = true;
+				Command<CMD_PAUSE>::Post(PauseMode::Normal, true);
+				AP_OK("Game paused: waiting for joining client to connect to Archipelago. Unpause manually when ready.");
+			} else if (!any_without_ap) {
+				_ap_paused_for_client_join = false; /* reset so next join triggers a new pause */
 			}
 		}
 
