@@ -272,13 +272,20 @@ static std::string AP_FormatLocalCurrency(int64_t amount)
 
 /**
  * Get total cargo delivered of a specific type: completed periods + current period.
+ * Also includes any period that has ended but not yet been flushed into _ap_cumul_cargo
+ * by AP_UpdateSessionStats (which runs on a realtime timer). Without this, the display
+ * briefly drops at period boundaries — especially visible during fast-forward.
  */
 static uint64_t AP_GetTotalCargo(CargoType ct)
 {
 	if (ct == INVALID_CARGO || ct >= NUM_CARGO) return 0;
 	const Company *c = Company::GetIfValid(_local_company);
-	uint64_t cur = (c != nullptr) ? (uint64_t)c->cur_economy.delivered_cargo[ct] : 0;
-	return _ap_cumul_cargo[ct] + cur;
+	if (c == nullptr) return _ap_cumul_cargo[ct];
+	uint64_t cur = (uint64_t)c->cur_economy.delivered_cargo[ct];
+	/* Pending: old_economy[0] period data not yet flushed into _ap_cumul_cargo */
+	uint64_t old_val = (uint64_t)c->old_economy[0].delivered_cargo[ct];
+	uint64_t pending = (old_val > _ap_snap_cargo[ct]) ? (old_val - _ap_snap_cargo[ct]) : 0;
+	return _ap_cumul_cargo[ct] + pending + cur;
 }
 
 /**
@@ -384,15 +391,8 @@ static VehicleType AP_VehicleTypeFromUnit(const std::string &unit)
  * Evaluate a single mission and return the current progress value.
  * Returns true if the mission goal is now met.
  */
-static bool EvaluateMission(APMission &m)
+int64_t AP_GetLiveMissionProgress(const APMission &m)
 {
-	/* Safety: a mission with amount <= 0 would auto-complete immediately.
-	 * This should never happen after the Python fix, but guard here too. */
-	if (m.amount <= 0) {
-		Debug(misc, 1, "[AP] Mission '{}' has amount<=0, skipping evaluation", m.location);
-		return false;
-	}
-
 	int64_t current = 0;
 
 	/* ── "transport" type ──────────────────────────────────────────────
@@ -459,8 +459,20 @@ static bool EvaluateMission(APMission &m)
 	}
 
 	/* Update live progress on the mission (visible in missions window) */
-	m.current_value = current;
+	return current;
+}
 
+static bool EvaluateMission(APMission &m)
+{
+	/* Safety: a mission with amount <= 0 would auto-complete immediately.
+	 * This should never happen after the Python fix, but guard here too. */
+	if (m.amount <= 0) {
+		Debug(misc, 1, "[AP] Mission '{}' has amount<=0, skipping evaluation", m.location);
+		return false;
+	}
+
+	int64_t current = AP_GetLiveMissionProgress(m);
+	m.current_value = current;
 	return current >= m.amount;
 }
 

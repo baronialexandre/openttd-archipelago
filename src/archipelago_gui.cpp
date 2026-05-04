@@ -217,12 +217,10 @@ struct ArchipelagoConnectWindow : public Window {
 		this->querystrings[WAPGUI_EDIT_PASS]   = &pass_buf;
 		this->FinishInitNested(wnum);
 
-		/* Restore last connection settings from ap_connection.cfg,
-		 * but only when the in-memory state is empty (first window open).
-		 * If _ap_last_host is already set (e.g. we're connected, or a second
-		 * instance on the same PC just overwrote the cfg), keep the in-memory
-		 * values so the window reflects THIS instance's connection. */
-		if (_ap_last_host.empty()) AP_LoadConnectionConfig();
+		/* Restore last connection settings from ap_connection.cfg.
+		 * The cfg is always written immediately before connecting, so it always
+		 * reflects the most recent connection for this session. */
+		AP_LoadConnectionConfig();
 
 		std::string full = _ap_last_host.empty() ? "archipelago.gg:38281"
 		                 : _ap_last_host + ":" + fmt::format("{}", _ap_last_port);
@@ -649,8 +647,9 @@ struct ArchipelagoMissionsWindow : public Window {
 		std::string      text;       ///< header display text
 		const APMission *mission;    ///< MISSION rows only
 		std::string      label;      ///< "by Train" / "by Ship" / "1k" / description
-		CargoType        cargo_type = INVALID_CARGO; ///< cargo icon (CARGO_HEADER only)
-		int64_t          delivered  = 0;             ///< units delivered so far (CARGO_HEADER only)
+		CargoType        cargo_type   = INVALID_CARGO; ///< cargo icon (CARGO_HEADER only)
+		const APMission *progress_src = nullptr;       ///< first incomplete tiered mission (CARGO_HEADER only)
+		int64_t          next_target  = 0;             ///< next incomplete mission amount (CARGO_HEADER only)
 	};
 
 	int row_height  = 0;
@@ -747,14 +746,26 @@ struct ArchipelagoMissionsWindow : public Window {
 			{
 				const CargoSpec *cs = AP_GetCargoSpecByName(cargo);
 				CargoType ct = (cs != nullptr) ? (CargoType)cs->Index() : INVALID_CARGO;
-				int64_t delivered = has_t ? tit->second[0]->current_value : 0;
+				/* Find the first incomplete tiered mission — pointer kept live so DrawWidget
+				 * can call AP_GetLiveMissionProgress() for real-time display. */
+				const APMission *progress_src = nullptr;
+				int64_t          next_target  = 0;
+				if (has_t) {
+					for (const APMission *m : tit->second) {
+						if (!m->completed) { progress_src = m; break; }
+					}
+					/* If all missions are complete, leave progress_src/next_target null/0
+					 * so the header shows no progress (all done). */
+					if (progress_src != nullptr) next_target = progress_src->amount;
+				}
 				MissionRow hdr;
-				hdr.type       = MissionRow::CARGO_HEADER;
-				hdr.text       = fmt::format("— {} —", cargo);
-				hdr.mission    = nullptr;
-				hdr.label      = "";
-				hdr.cargo_type = ct;
-				hdr.delivered  = delivered;
+				hdr.type         = MissionRow::CARGO_HEADER;
+				hdr.text         = fmt::format("— {} —", cargo);
+				hdr.mission      = nullptr;
+				hdr.label        = "";
+				hdr.cargo_type   = ct;
+				hdr.progress_src = progress_src;
+				hdr.next_target  = next_target;
 				rows.push_back(std::move(hdr));
 			}
 
@@ -775,22 +786,24 @@ struct ArchipelagoMissionsWindow : public Window {
 
 		/* Compute max line pixel width for hscrollbar range. */
 		const int icon_slot = (int)GetLargestCargoIconSize().width + 4;
-		const int dash_w = (int)GetStringBoundingBox("\u2014 ").width + (int)GetStringBoundingBox(" \u2014").width;
 		max_line_px = 0;
 		for (const auto &row : rows) {
 			std::string line;
 			if (row.type == MissionRow::CARGO_HEADER) {
+				int64_t delivered = row.progress_src ? AP_GetLiveMissionProgress(*row.progress_src) : 0;
 				line = row.text;
-				if (row.delivered > 0) line += fmt::format("  {}", FmtNum(row.delivered));
+				if (row.next_target > 0) line += fmt::format("  {} / {}", FmtNum(delivered), FmtNum(row.next_target));
+				else if (delivered > 0) line += fmt::format("  {}", FmtNum(delivered));
 			} else if (row.type == MissionRow::SECTION_HEADER) {
 				line = row.text;
 			} else if (row.mission) {
 				line = (row.mission->completed ? "[X] " : "[ ] ") + row.label;
 			}
-			/* Mission rows indented 8 px; cargo headers: two icon slots + dashes on each side. */
-			int indent = (row.type == MissionRow::MISSION) ? 8 : 0;
-			int extra = (row.type == MissionRow::CARGO_HEADER && IsValidCargoType(row.cargo_type)) ? (icon_slot * 2 + dash_w + 8) : 0;
-			int w = GetStringBoundingBox(line).width + indent + extra;
+			/* CARGO_HEADER: icon is fixed (non-scrolling), only text width matters for hscroll.
+			 * MISSION rows indented 8 px. */
+			int prefix = (row.type == MissionRow::CARGO_HEADER) ? (2 + icon_slot) :
+			             (row.type == MissionRow::MISSION) ? 8 : 0;
+			int w = GetStringBoundingBox(line).width + prefix;
 			if (w > max_line_px) max_line_px = w;
 		}
 
@@ -826,7 +839,8 @@ struct ArchipelagoMissionsWindow : public Window {
 	void OnRealtimeTick([[maybe_unused]] uint delta_ms) override
 	{
 		uint32_t g = _ap_status_generation.load(std::memory_order_relaxed);
-		if (g != last_gen) { last_gen = g; RebuildRows(); this->SetDirty(); }
+		if (g != last_gen) { last_gen = g; RebuildRows(); }
+		this->SetDirty(); /* refresh live current_value progress each tick */
 	}
 
 	void OnClick([[maybe_unused]] Point pt, WidgetID widget, [[maybe_unused]] int cc) override
@@ -860,33 +874,24 @@ struct ArchipelagoMissionsWindow : public Window {
 				DrawString(r.left + 4 + x_off, r.right + max_line_px, y,
 				    row.text, TC_YELLOW, SA_LEFT | SA_FORCE);
 			} else if (row.type == MissionRow::CARGO_HEADER) {
+				int64_t delivered = row.progress_src ? AP_GetLiveMissionProgress(*row.progress_src) : 0;
 				std::string header = row.text;
-				if (row.delivered > 0) header += fmt::format("  {}", FmtNum(row.delivered));
-				int cur_x = r.left + 4 + x_off;
-				if (IsValidCargoType(row.cargo_type)) {
-					const CargoSpec *cs = CargoSpec::Get(row.cargo_type);
-					SpriteID spr = cs->GetCargoIcon();
-					Dimension max_d = GetLargestCargoIconSize();
-					Dimension d = (spr != 0) ? GetSpriteSize(spr) : Dimension{0, 0};
-					/* "— " prefix */
-					cur_x = DrawString(cur_x, r.right + max_line_px, y, "\u2014 ", TC_ORANGE, SA_LEFT | SA_FORCE) + 2;
-					/* left icon */
-					if (spr != 0) DrawSprite(spr, PAL_NONE,
-						CentreBounds(cur_x, cur_x + (int)max_d.width, d.width),
+				if (row.next_target > 0) header += fmt::format("  {} / {}", FmtNum(delivered), FmtNum(row.next_target));
+				else if (delivered > 0) header += fmt::format("  {}", FmtNum(delivered));
+				/* Draw icon at a fixed non-scrolling position so it never artifacts.
+				 * Text starts after the icon slot and scrolls with x_off. */
+				const CargoSpec *cs = (IsValidCargoType(row.cargo_type)) ? CargoSpec::Get(row.cargo_type) : nullptr;
+				SpriteID spr = (cs != nullptr) ? cs->GetCargoIcon() : 0;
+				Dimension icon_d = GetLargestCargoIconSize();
+				int icon_slot = (int)icon_d.width + 4;
+				if (spr != 0) {
+					Dimension d = GetSpriteSize(spr);
+					DrawSprite(spr, PAL_NONE,
+						CentreBounds(r.left + 2, r.left + 2 + (int)icon_d.width, d.width),
 						CentreBounds(y, y + rh, d.height));
-					cur_x += (int)max_d.width + 4;
-					/* cargo name */
-					cur_x = DrawString(cur_x, r.right + max_line_px, y, header, TC_ORANGE, SA_LEFT | SA_FORCE) + 4;
-					/* right icon */
-					if (spr != 0) DrawSprite(spr, PAL_NONE,
-						CentreBounds(cur_x, cur_x + (int)max_d.width, d.width),
-						CentreBounds(y, y + rh, d.height));
-					cur_x += (int)max_d.width + 2;
-					/* " —" suffix */
-					DrawString(cur_x, r.right + max_line_px, y, " \u2014", TC_ORANGE, SA_LEFT | SA_FORCE);
-				} else {
-					DrawString(cur_x, r.right + max_line_px, y, header, TC_ORANGE, SA_LEFT | SA_FORCE);
 				}
+				DrawString(r.left + 2 + icon_slot + x_off, r.right + max_line_px, y,
+				    header, TC_ORANGE, SA_LEFT | SA_FORCE);
 			} else {
 				const APMission *m = row.mission;
 				if (!m) { y += rh; continue; }

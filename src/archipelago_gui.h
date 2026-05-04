@@ -39,6 +39,7 @@ void AP_LoadConnectionConfig();
 void AP_RestoreItemsIndexBeforeConnect();
 void AP_EnsureBasesets();
 bool              AP_IsConnected();
+int64_t AP_GetLiveMissionProgress(const APMission &m);
 
 /* World-start handshake — called from intro_gui.cpp ONLY.
  * StartNewGameWithoutGUI must never be called from inside a timer callback. */
