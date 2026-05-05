@@ -122,10 +122,8 @@ std::string  AP_GetStartingGrantsAppliedSlot();
 void         AP_SetStartingGrantsAppliedSlot(const std::string &s);
 std::string  AP_GetProgressSlotIdentity();
 void         AP_SetProgressSlotIdentity(const std::string &s);
-void         AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out);
-void         AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in);
-void         AP_GetCumulStatsByVtype(uint64_t *flat_out, int vtype_count, int num_cargo);
-void         AP_SetCumulStatsByVtype(const uint64_t *flat_in, int vtype_count, int num_cargo);
+void         AP_GetCumulStatsByVtype(uint8_t cid, uint64_t *flat_out, int vtype_count, int num_cargo);
+void         AP_SetCumulStatsByVtype(uint8_t cid, const uint64_t *flat_in, int vtype_count, int num_cargo);
 std::string  AP_GetMaintainCountersStr();
 void         AP_SetMaintainCountersStr(const std::string &s);
 std::string  AP_GetNamedEntityStr();
@@ -163,32 +161,27 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "shop",        AP_GetPurchasedShopLocationsStr());
         KVSet(_ap_sl_blob, "goal_sent",   IStr(AP_GetGoalSent()));
         KVSet(_ap_sl_blob, "starting_grants_slot", AP_GetStartingGrantsAppliedSlot());
-        KVSet(_ap_sl_blob, "progress_slot", AP_GetProgressSlotIdentity());
-
-        constexpr int NC = 64;
-        uint64_t cargo[NC] = {};
-        int64_t  profit    = 0;
-        AP_GetCumulStats(cargo, NC, &profit);
-        KVSet(_ap_sl_blob, "profit",   IStr(profit));
-        KVSet(_ap_sl_blob, "cargo",    PackCargo_AP(cargo, NC));
-
-        constexpr int NV = 4;
-        uint64_t cargov[NV * NC] = {};
-        AP_GetCumulStatsByVtype(cargov, NV, NC);
-        KVSet(_ap_sl_blob, "cargov",   PackCargo_AP(cargov, NV * NC));
+        /* Store host and slot as separate keys — the KV separator is '|' so a
+         * combined "host|slot" value would be silently truncated on read. */
+        KVSet(_ap_sl_blob, "progress_host",      _ap_last_host);
+        KVSet(_ap_sl_blob, "progress_slot_name", _ap_last_slot);
 
         KVSet(_ap_sl_blob, "maintain", AP_GetMaintainCountersStr());
         KVSet(_ap_sl_blob, "named",    AP_GetNamedEntityStr());
 
-        /* Save per-company AP lock state so any machine that loads this
-         * savegame (host restart, client reconnect, etc.) immediately has
-         * the correct cargo-restriction state — preventing the first-tick
-         * simulation desync where ap_active=false lets locked cargo load. */
+        /* Save per-company AP state (cargo lock + per-vtype delivery counters).
+         * cargov_N = flat [vtype][cargo] array; contains the ground truth totals. */
+        constexpr int NC = 64;
+        constexpr int NV = 4;
         for (uint8_t c = 0; c < AP_SL_MAX_COMPANIES; c++) {
             if (!AP_GetCompanyAPActiveIdx(c)) continue;
             KVSet(_ap_sl_blob, fmt::format("apf_{}", c), "1");
             uint64_t cmask = AP_GetCompanyCargoMaskIdx(c);
             if (cmask != 0) KVSet(_ap_sl_blob, fmt::format("apc_{}", c), fmt::format("{}", cmask));
+
+            uint64_t cargov[NV * NC] = {};
+            AP_GetCumulStatsByVtype(c, cargov, NV, NC);
+            KVSet(_ap_sl_blob, fmt::format("cargov_{}", c), PackCargo_AP(cargov, NV * NC));
         }
 
         SlTableHeader(_ap_desc);
@@ -210,32 +203,41 @@ struct APSTChunkHandler : ChunkHandler {
 
         if (_ap_sl_blob.empty()) return;
 
+        /* When loading the main menu background world, only restore the connection
+         * credentials (host/port/slot/pass).  Restoring progress state (completed
+         * missions, cargo counters, etc.) from an arbitrary background save would
+         * pollute _ap_completed_mission_locations and _ap_pending_sd.missions with
+         * stale data that then bleeds into the next real game session. */
+        const bool is_menu_load = (_game_mode == GM_MENU);
+
         try {
             _ap_last_host = KVGet(_ap_sl_blob, "host");
             _ap_last_port = ParseU16(KVGet(_ap_sl_blob, "port", "38281"), 38281);
             _ap_last_slot = KVGet(_ap_sl_blob, "slot");
             _ap_last_pass = KVGet(_ap_sl_blob, "pass");
 
-            const std::string expected_progress_slot = _ap_last_host.empty() || _ap_last_slot.empty()
-                ? std::string()
-                : fmt::format("{}:{}|{}", _ap_last_host, _ap_last_port, _ap_last_slot);
-            const std::string loaded_progress_slot = KVGet(_ap_sl_blob, "progress_slot");
-            const bool progress_slot_matches = loaded_progress_slot.empty() || loaded_progress_slot == expected_progress_slot;
+            /* Progress slot matching: host and slot are stored as separate keys
+             * to avoid collision with the KV separator '|'.
+             * Legacy saves used a combined "progress_slot" key whose value was
+             * silently truncated at the '|' — treat missing/unreadable as match. */
+            const std::string loaded_ph = KVGet(_ap_sl_blob, "progress_host");
+            const std::string loaded_ps = KVGet(_ap_sl_blob, "progress_slot_name");
+            const bool progress_slot_matches = (loaded_ph.empty() && loaded_ps.empty())
+                || (loaded_ph == _ap_last_host && loaded_ps == _ap_last_slot);
 
-            AP_SetProgressSlotIdentity(expected_progress_slot);
+            /* Skip progress restoration for main menu background loads. */
+            if (is_menu_load) return;
+
+            /* Do NOT call AP_SetProgressSlotIdentity here — that would poison the
+             * mismatch check in AP_OnSlotData, which fires after the load completes
+             * and compares the live connection against what we just set from the save,
+             * causing a false "slot changed" warning that wipes the loaded stats. */
 
             if (!progress_slot_matches) {
                 AP_SetCompletedMissionsStr("");
                 AP_SetPurchasedShopLocationsStr("");
                 AP_SetGoalSent(false);
                 AP_SetStartingGrantsAppliedSlot("");
-
-                constexpr int NC = 64;
-                uint64_t cargo[NC] = {};
-                AP_SetCumulStats(cargo, NC, 0);
-                constexpr int NV = 4;
-                uint64_t cargov[NV * NC] = {};
-                AP_SetCumulStatsByVtype(cargov, NV, NC);
                 AP_SetMaintainCountersStr("");
                 AP_SetNamedEntityStr("");
                 return;
@@ -254,27 +256,47 @@ struct APSTChunkHandler : ChunkHandler {
 
             AP_SetGoalSent(KVGet(_ap_sl_blob, "goal_sent", "0") == "1");
 
-            constexpr int NC = 64;
-            uint64_t cargo[NC] = {};
-            UnpackCargo_AP(KVGet(_ap_sl_blob, "cargo"), cargo, NC);
-            AP_SetCumulStats(cargo, NC, getint64("profit"));
-
-            constexpr int NV = 4;
-            uint64_t cargov[NV * NC] = {};
-            UnpackCargo_AP(KVGet(_ap_sl_blob, "cargov"), cargov, NV * NC);
-            AP_SetCumulStatsByVtype(cargov, NV, NC);
-
             AP_SetMaintainCountersStr(KVGet(_ap_sl_blob, "maintain"));
             AP_SetNamedEntityStr(KVGet(_ap_sl_blob, "named"));
 
-            /* Restore per-company AP lock state — must happen during Load()
-             * so the simulation starts with correct cargo restrictions before
-             * the AP timer fires and DoCommands are re-applied. */
+            /* Restore per-company AP state (cargo lock + delivery counters).
+             * Current format: cargov_N per AP-active company.
+             * Legacy fallback A: cargo_N + cargov_N keys (pre-direct-counter saves) —
+             *   we load cargov_N if present, ignoring cargo_N (it was timer-based).
+             * Legacy fallback B: single "cargov" key (single-company pre-multiAP) —
+             *   loaded into the sole AP-active company. */
+            constexpr int NC = 64;
+            constexpr int NV = 4;
+            bool any_new_format = false;
             for (uint8_t c = 0; c < AP_SL_MAX_COMPANIES; c++) {
                 if (KVGet(_ap_sl_blob, fmt::format("apf_{}", c), "0") != "1") continue;
                 AP_SetCompanyAPActiveIdx(c, true);
                 uint64_t cmask = ParseU64(KVGet(_ap_sl_blob, fmt::format("apc_{}", c), "0"), 0);
                 if (cmask != 0) AP_SetCompanyCargoMaskIdx(c, cmask);
+
+                std::string cargov_str = KVGet(_ap_sl_blob, fmt::format("cargov_{}", c));
+                if (!cargov_str.empty()) {
+                    any_new_format = true;
+                    uint64_t cargov[NV * NC] = {};
+                    UnpackCargo_AP(cargov_str, cargov, NV * NC);
+                    AP_SetCumulStatsByVtype(c, cargov, NV, NC);
+                }
+            }
+
+            /* Legacy B: single-company "cargov" key */
+            if (!any_new_format) {
+                std::string legacy = KVGet(_ap_sl_blob, "cargov");
+                if (!legacy.empty()) {
+                    uint8_t target = 0;
+                    int active = 0;
+                    for (uint8_t c = 0; c < AP_SL_MAX_COMPANIES; c++)
+                        if (AP_GetCompanyAPActiveIdx(c)) { target = c; active++; }
+                    if (active <= 1) {
+                        uint64_t cargov[NV * NC] = {};
+                        UnpackCargo_AP(legacy, cargov, NV * NC);
+                        AP_SetCumulStatsByVtype(target, cargov, NV, NC);
+                    }
+                }
             }
         } catch (...) {
             /* Parsing failed — AP progress lost but game loads. */

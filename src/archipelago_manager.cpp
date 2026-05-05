@@ -56,6 +56,7 @@
 #include "table/strings.h"
 #include "timer/timer_game_tick.h"
 #include "timer/timer_game_calendar.h"
+#include "timer/timer_game_economy.h"
 #include "timer/timer_game_realtime.h"
 #include "timer/timer.h"
 
@@ -155,17 +156,18 @@ static CargoType AP_FindCargoType(const std::string &name)
 }
 
 /* -------------------------------------------------------------------------
- * Session statistics — cumulative cargo delivery and profit accumulators.
+ * Session statistics — per-company cumulative cargo delivery.
  *
- * OpenTTD stores per-period stats in old_economy[0] (last completed period)
- * and cur_economy (current ongoing period).  We detect when old_economy[0]
- * refreshes (= a new financial period ended) and add the values to our
- * running totals so we can track "total cargo delivered this session".
+ * Each delivery is counted directly in AP_RecordCargoDelivery, which is
+ * called from economy.cpp on every PayFinalDelivery event.  This is an
+ * exact, event-driven counter: no timers, no period-boundary snap logic,
+ * no OpenTTD economy data needed.  The total for a cargo type is simply
+ * the sum across all vehicle types.
+ *
+ * All AP-active companies are tracked on every client — OpenTTD syncs all
+ * company economy data via the simulation, so any client can produce a
+ * complete save for all AP companies.
  * ---------------------------------------------------------------------- */
-
-static uint64_t _ap_cumul_cargo[NUM_CARGO]      = {};  ///< Cargo delivered in completed periods
-static Money    _ap_cumul_profit                = 0;   ///< Profit earned in completed periods
-static bool     _ap_stats_initialized          = false;
 
 /* Per-vehicle-type cargo counters: index 0=train, 1=road, 2=ship, 3=aircraft */
 static constexpr int AP_VTYPE_TRAIN    = 0;
@@ -173,7 +175,16 @@ static constexpr int AP_VTYPE_ROAD     = 1;
 static constexpr int AP_VTYPE_SHIP     = 2;
 static constexpr int AP_VTYPE_AIRCRAFT = 3;
 static constexpr int AP_VTYPE_COUNT    = 4;
-static uint64_t _ap_cumul_cargo_by_vtype[AP_VTYPE_COUNT][NUM_CARGO] = {};
+
+static constexpr uint8_t AP_MAX_COMPANIES = 15; /* matches MAX_COMPANIES */
+
+/** Per-company cumulative delivery stats. */
+struct APCumulStats {
+	uint64_t cargo_by_vtype[AP_VTYPE_COUNT][NUM_CARGO] = {};
+	bool     from_save = false;
+};
+
+static APCumulStats _ap_cumul[AP_MAX_COMPANIES];
 static std::map<std::string, int> _ap_received_item_counts; ///< Count of each received item (all types, for inventory display and win-condition checks)
 
 static void AP_RefreshMoneyDisplays()
@@ -183,10 +194,6 @@ static void AP_RefreshMoneyDisplays()
 	SetWindowClassesDirty(WC_ARCHIPELAGO);
 	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 }
-
-/** Snapshot of last-seen old_economy[0] values (for change detection) */
-static uint32_t _ap_snap_cargo[NUM_CARGO]       = {};
-static Money    _ap_snap_profit                 = 0;
 
 static int AP_VehicleTypeToIndex(VehicleType vt)
 {
@@ -208,57 +215,31 @@ static int AP_VehicleKeyToIndex(const std::string &key)
 
 static void AP_InitSessionStats()
 {
-	for (CargoType i = 0; i < NUM_CARGO; i++) { _ap_cumul_cargo[i] = 0; _ap_snap_cargo[i] = 0; }
-	for (int v = 0; v < AP_VTYPE_COUNT; v++)
-		for (CargoType i = 0; i < NUM_CARGO; i++) _ap_cumul_cargo_by_vtype[v][i] = 0;
-	_ap_cumul_profit      = 0;
-	_ap_snap_profit       = 0;
-	_ap_stats_initialized = false;
+	for (auto &s : _ap_cumul) s = APCumulStats{};
 	if (!_ap_cargo_map_built) BuildCargoMap();
 }
 
-/**
- * Called every ~10 s from the realtime timer.
- * If old_economy[0] has changed since last call, accumulate the values.
- */
-static void AP_UpdateSessionStats()
+/** Returns total cargo of type ct delivered this session for _local_company.
+ *  Sums across all vehicle types — the counters are incremented directly on
+ *  every delivery event so this is always exact, with no timing edge cases. */
+static uint64_t AP_GetTotalCargo(CargoType ct)
 {
-	CompanyID cid = _local_company;
-	const Company *c = Company::GetIfValid(cid);
-	if (c == nullptr) return;
+	if (ct == INVALID_CARGO || ct >= NUM_CARGO) return 0;
+	const APCumulStats &s = _ap_cumul[_local_company.base()];
+	uint64_t total = 0;
+	for (int v = 0; v < AP_VTYPE_COUNT; v++) total += s.cargo_by_vtype[v][ct];
+	return total;
+}
 
-	if (!_ap_stats_initialized) {
-		/* Take initial snapshot so the first "change" doesn't double-count */
-		for (CargoType i = 0; i < NUM_CARGO; i++)
-			_ap_snap_cargo[i] = c->old_economy[0].delivered_cargo[i];
-		_ap_snap_profit       = c->old_economy[0].income - c->old_economy[0].expenses;
-		_ap_stats_initialized = true;
-		return;
-	}
-
-	/* Detect if a new financial period has ended (old_economy[0] changed) */
-	bool refreshed = false;
-	for (CargoType i = 0; i < NUM_CARGO; i++) {
-		if (c->old_economy[0].delivered_cargo[i] != _ap_snap_cargo[i]) {
-			refreshed = true;
-			break;
-		}
-	}
-	if (!refreshed) {
-		Money new_p = c->old_economy[0].income - c->old_economy[0].expenses;
-		if (new_p != _ap_snap_profit) refreshed = true;
-	}
-
-	if (refreshed) {
-		for (CargoType i = 0; i < NUM_CARGO; i++) {
-			_ap_cumul_cargo[i] += c->old_economy[0].delivered_cargo[i];
-			_ap_snap_cargo[i]   = c->old_economy[0].delivered_cargo[i];
-		}
-		Money period_profit = c->old_economy[0].income - c->old_economy[0].expenses;
-		_ap_cumul_profit += period_profit;
-		_ap_snap_profit   = period_profit;
-		Debug(misc, 1, "[AP] Economy period snapped. Cumulative profit: ${}", (int64_t)_ap_cumul_profit);
-	}
+/**
+ * Get total cargo delivered by a specific vehicle type.
+ * Only counts deliveries recorded via AP_RecordCargoDelivery (no cur_economy breakdown).
+ */
+static uint64_t AP_GetTotalCargoByVehicle(int vtidx, CargoType ct)
+{
+	if (vtidx < 0 || vtidx >= AP_VTYPE_COUNT) return 0;
+	if (ct == INVALID_CARGO || ct >= NUM_CARGO) return 0;
+	return _ap_cumul[_local_company.base()].cargo_by_vtype[vtidx][ct];
 }
 
 static std::string AP_FormatLocalCurrency(int64_t amount)
@@ -271,44 +252,17 @@ static std::string AP_FormatLocalCurrency(int64_t amount)
 }
 
 /**
- * Get total cargo delivered of a specific type: completed periods + current period.
- * Also includes any period that has ended but not yet been flushed into _ap_cumul_cargo
- * by AP_UpdateSessionStats (which runs on a realtime timer). Without this, the display
- * briefly drops at period boundaries — especially visible during fast-forward.
- */
-static uint64_t AP_GetTotalCargo(CargoType ct)
-{
-	if (ct == INVALID_CARGO || ct >= NUM_CARGO) return 0;
-	const Company *c = Company::GetIfValid(_local_company);
-	if (c == nullptr) return _ap_cumul_cargo[ct];
-	uint64_t cur = (uint64_t)c->cur_economy.delivered_cargo[ct];
-	/* Pending: old_economy[0] period data not yet flushed into _ap_cumul_cargo */
-	uint64_t old_val = (uint64_t)c->old_economy[0].delivered_cargo[ct];
-	uint64_t pending = (old_val > _ap_snap_cargo[ct]) ? (old_val - _ap_snap_cargo[ct]) : 0;
-	return _ap_cumul_cargo[ct] + pending + cur;
-}
-
-/**
- * Get total cargo delivered by a specific vehicle type.
- * Only counts deliveries recorded via AP_RecordCargoDelivery (no cur_economy breakdown).
- */
-static uint64_t AP_GetTotalCargoByVehicle(int vtidx, CargoType ct)
-{
-	if (vtidx < 0 || vtidx >= AP_VTYPE_COUNT) return 0;
-	if (ct == INVALID_CARGO || ct >= NUM_CARGO) return 0;
-	return _ap_cumul_cargo_by_vtype[vtidx][ct];
-}
-
-/**
  * Record a cargo delivery by vehicle type. Called from economy.cpp when the
  * local company's vehicle delivers cargo to a station.
  */
-void AP_RecordCargoDelivery(VehicleType vtype, CargoType ct, uint32_t amount)
+void AP_RecordCargoDelivery(CompanyID cid, VehicleType vtype, CargoType ct, uint32_t amount)
 {
+	if (cid.base() >= AP_MAX_COMPANIES) return;
+	if (!AP_GetCompanyAPActiveIdx(cid.base())) return;
 	if (ct >= NUM_CARGO) return;
 	int idx = AP_VehicleTypeToIndex(vtype);
 	if (idx < 0) return;
-	_ap_cumul_cargo_by_vtype[idx][ct] += amount;
+	_ap_cumul[cid.base()].cargo_by_vtype[idx][ct] += amount;
 }
 
 /* -------------------------------------------------------------------------
@@ -487,10 +441,10 @@ std::string _ap_last_pass;
 bool        _ap_last_ssl = false;
 static std::string _ap_progress_slot_identity;
 
-static std::string AP_MakeSlotIdentity(const std::string &host, uint16_t port, const std::string &slot)
+static std::string AP_MakeSlotIdentity(const std::string &host, uint16_t /*port*/, const std::string &slot)
 {
 	if (host.empty() || slot.empty()) return {};
-	return fmt::format("{}:{}|{}", host, port, slot);
+	return fmt::format("{}|{}", host, slot);
 }
 
 static std::string AP_GetCurrentConnectionSlotIdentity()
@@ -1198,6 +1152,8 @@ static void AP_ApplyCompletedMissionRestore()
 		if (completed) {
 			m.completed = true;
 			_ap_completed_mission_locations.insert(m.location);
+		} else {
+			m.completed = false;
 		}
 	}
 }
@@ -1256,6 +1212,12 @@ static void AP_OnSlotData(const APSlotData &sd)
 	/* Only auto-start world if we're on the main menu, start-new mode is selected,
 	 * and we haven't already started a world for this connection session. */
 	if (_game_mode == GM_MENU && _ap_menu_connect_start_new && !_ap_world_started_this_session) {
+		/* Discard any stale items that arrived from a prior connection and haven't been
+		 * processed yet (Disconnect() doesn't flush the inbound_queue; items stuck in
+		 * _ap_pending_items or _ap_replay_queue from the previous session would otherwise
+		 * be replayed alongside this session's items, causing double-counts in the UI). */
+		_ap_pending_items.clear();
+		_ap_replay_queue.clear();
 		_ap_client->ResetReceivedItemsIndex(); /* fresh game — treat all incoming items as new */
 		/* Clear persisted grants for this slot — it's a brand-new game */
 		if (!incoming_slot_identity.empty()) {
@@ -1618,7 +1580,6 @@ void AP_SendCheckByName(const std::string &location_name)
 
 static uint32_t _ap_realtime_ticks = 0;
 static constexpr uint32_t AP_MISSION_CHECK_TICKS   = 4;   /* 1 second  (4 × 250 ms) */
-static constexpr uint32_t AP_STATS_AND_LOCK_TICKS  = 40;  /* 10 seconds (40 × 250 ms) */
 static constexpr uint32_t AP_WIN_CHECK_TICKS       = 40;  /* 10 seconds (40 × 250 ms) */
 
 bool AP_GetGoalSent()        { return _ap_goal_sent; }
@@ -1682,33 +1643,23 @@ void AP_SetPurchasedShopLocationsStr(const std::string &s)
 	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
-void AP_GetCumulStats(uint64_t *cargo_out, int num_cargo, int64_t *profit_out)
+void AP_GetCumulStatsByVtype(uint8_t cid, uint64_t *flat_out, int vtype_count, int num_cargo)
 {
-    for (int i = 0; i < num_cargo && i < (int)NUM_CARGO; i++)
-        cargo_out[i] = _ap_cumul_cargo[i];
-    *profit_out = (int64_t)_ap_cumul_profit;
-}
-
-void AP_SetCumulStats(const uint64_t *cargo_in, int num_cargo, int64_t profit_in)
-{
-    for (int i = 0; i < num_cargo && i < (int)NUM_CARGO; i++)
-        _ap_cumul_cargo[i] = cargo_in[i];
-    _ap_cumul_profit = (Money)profit_in;
-    _ap_stats_initialized = true;
-}
-
-void AP_GetCumulStatsByVtype(uint64_t *flat_out, int vtype_count, int num_cargo)
-{
+    if (cid >= AP_MAX_COMPANIES) return;
+    const APCumulStats &s = _ap_cumul[cid];
     for (int v = 0; v < vtype_count && v < AP_VTYPE_COUNT; v++)
         for (int i = 0; i < num_cargo && i < (int)NUM_CARGO; i++)
-            flat_out[v * num_cargo + i] = _ap_cumul_cargo_by_vtype[v][i];
+            flat_out[v * num_cargo + i] = s.cargo_by_vtype[v][i];
 }
 
-void AP_SetCumulStatsByVtype(const uint64_t *flat_in, int vtype_count, int num_cargo)
+void AP_SetCumulStatsByVtype(uint8_t cid, const uint64_t *flat_in, int vtype_count, int num_cargo)
 {
+    if (cid >= AP_MAX_COMPANIES) return;
+    APCumulStats &s = _ap_cumul[cid];
     for (int v = 0; v < vtype_count && v < AP_VTYPE_COUNT; v++)
         for (int i = 0; i < num_cargo && i < (int)NUM_CARGO; i++)
-            _ap_cumul_cargo_by_vtype[v][i] = flat_in[v * num_cargo + i];
+            s.cargo_by_vtype[v][i] = flat_in[v * num_cargo + i];
+    s.from_save = true;
 }
 
 /* Returns "location=N:P,..." for all maintain missions.
@@ -2162,7 +2113,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		if (_game_mode == GM_NORMAL &&
 		    _local_company < MAX_COMPANIES &&
 		    _ap_client->GetState() == APState::AUTHENTICATED &&
-		    !AP_IsCompanyAPActive(_local_company)) {  /* Only setup if THIS company hasn't connected yet */
+		    (!AP_IsCompanyAPActive(_local_company) || !_ap_session_started)) {  /* Setup on fresh connect OR after slot data (e.g. save-load reconnect) */
 
 			const std::string cur_slot_id = AP_GetCurrentConnectionSlotIdentity();
 			const bool apply_starting_grants =
@@ -2213,8 +2164,19 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			/* Build the cargo name → type map for mission evaluation */
 			BuildCargoMap();
 
-			/* Reset session statistics for mission evaluation */
-			AP_InitSessionStats();
+			/* Reset this company's session stats for mission evaluation.
+			 * Only wipe if this is a genuinely fresh first connection (_ap_is_primary=true
+			 * means the company was not yet AP-active when this block was entered).
+			 * When re-entering after save-load or disconnect/reconnect the company is
+			 * already active and the stats are either loaded from the savegame
+			 * (from_save=true) or represent mid-session deliveries — both must be kept. */
+			{
+				APCumulStats &cs = _ap_cumul[_local_company.base()];
+				if (_ap_is_primary) {
+					if (!cs.from_save) cs = APCumulStats{};
+					else cs.from_save = false;
+				}
+			}
 
 			if (_ap_pending_sd.missions.empty()) {
 				AP_WARN("No missions in slot_data; mission checks will remain disabled.");
@@ -2402,19 +2364,6 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			CheckMissions();
 		}
 
-		if (_ap_realtime_ticks % AP_STATS_AND_LOCK_TICKS == 0 &&
-		    _ap_session_started &&
-		    _game_mode == GM_NORMAL) {
-
-			/* Engine locking is now handled purely via GUI filtering
-			 * (AP_IsEngineUnlocked in build_vehicle_gui.cpp). No periodic
-			 * re-lock sweep is needed — the build list is regenerated each
-			 * time the window opens and respects _ap_unlocked_engine_ids. */
-
-			/* Accumulate cargo/profit from completed economy periods */
-			AP_UpdateSessionStats();
-
-		}
 
 		if (_ap_realtime_ticks >= AP_WIN_CHECK_TICKS &&
 		    _ap_session_started && !_ap_goal_sent &&

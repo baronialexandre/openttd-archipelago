@@ -337,6 +337,10 @@ void ArchipelagoClient::Disconnect()
 	if (worker_thread.joinable()) worker_thread.join();
 	has_slot_data.store(false);
 	state.store(APState::DISCONNECTED);
+	/* Flush any events that arrived before the thread stopped — they belong to
+	 * the old connection and must not be replayed on the next Connect(). */
+	std::lock_guard<std::mutex> lg(inbound_mutex);
+	inbound_queue.clear();
 }
 
 void ArchipelagoClient::SendCheck(int64_t location_id)
