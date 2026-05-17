@@ -124,10 +124,9 @@ std::string  AP_GetProgressSlotIdentity();
 void         AP_SetProgressSlotIdentity(const std::string &s);
 void         AP_GetCumulStatsByVtype(uint8_t cid, uint64_t *flat_out, int vtype_count, int num_cargo);
 void         AP_SetCumulStatsByVtype(uint8_t cid, const uint64_t *flat_in, int vtype_count, int num_cargo);
-std::string  AP_GetMaintainCountersStr();
-void         AP_SetMaintainCountersStr(const std::string &s);
-std::string  AP_GetNamedEntityStr();
-void         AP_SetNamedEntityStr(const std::string &s);
+
+int64_t      AP_GetSavedItemsIndex();
+void         AP_SetSavedItemsIndex(int64_t v);
 
 /* Per-company AP lock state (simulation-critical — must be in savegame). */
 bool        AP_GetCompanyAPActiveIdx(uint8_t company_index);
@@ -168,8 +167,7 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "progress_host",      _ap_last_host);
         KVSet(_ap_sl_blob, "progress_slot_name", _ap_last_slot);
 
-        KVSet(_ap_sl_blob, "maintain", AP_GetMaintainCountersStr());
-        KVSet(_ap_sl_blob, "named",    AP_GetNamedEntityStr());
+        KVSet(_ap_sl_blob, "items_index", fmt::format("{}", AP_GetSavedItemsIndex()));
 
         /* Save per-company AP state (cargo lock + per-vtype delivery counters).
          * cargov_N = flat [vtype][cargo] array; contains the ground truth totals.
@@ -244,8 +242,7 @@ struct APSTChunkHandler : ChunkHandler {
                 AP_SetPurchasedShopLocationsStr("");
                 AP_SetGoalSent(false);
                 AP_SetStartingGrantsAppliedSlot("");
-                AP_SetMaintainCountersStr("");
-                AP_SetNamedEntityStr("");
+                AP_SetSavedItemsIndex(0);
                 return;
             }
 
@@ -262,8 +259,7 @@ struct APSTChunkHandler : ChunkHandler {
 
             AP_SetGoalSent(KVGet(_ap_sl_blob, "goal_sent", "0") == "1");
 
-            AP_SetMaintainCountersStr(KVGet(_ap_sl_blob, "maintain"));
-            AP_SetNamedEntityStr(KVGet(_ap_sl_blob, "named"));
+            AP_SetSavedItemsIndex(ParseI64(KVGet(_ap_sl_blob, "items_index", "0")));
 
             /* Restore per-company AP state (cargo lock + delivery counters).
              * Current format: cargov_N per AP-active company; ape_N for engine unlocks.

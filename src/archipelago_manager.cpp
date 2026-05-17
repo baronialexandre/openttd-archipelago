@@ -689,8 +689,8 @@ static const std::map<std::string, std::vector<std::vector<std::string>>> _ap_pr
     }},
     {"Progressive Road Vehicles", {
         {"MPS Regal Bus", "MPS Mail Truck", "Balogh Coal Truck", "Hereford Grain Truck", "Balogh Goods Truck", "Witcombe Oil Tanker", "Witcombe Wood Truck", "MPS Iron Ore Truck", "Balogh Steel Truck", "Balogh Armoured Truck", "Talbott Livestock Van"},
-        {"Hereford Leopard Bus", "Perry Mail Truck", "Uhl Coal Truck", "Thomas Grain Truck", "Craighead Goods Truck", "Foster Oil Tanker", "Foster Wood Truck", "Uhl Iron Ore Truck", "Uhl Steel Truck", "Uhl Armoured Truck", "Uhl Livestock Van"},
-        {"Foster Bus", "Reynard Mail Truck", "DW Coal Truck", "Goss Grain Truck", "Goss Goods Truck", "Perry Oil Tanker", "Moreland Wood Truck", "Chippy Iron Ore Truck", "Kelling Steel Truck", "Foster Armoured Truck", "Foster Livestock Van"},
+        {"Hereford Leopard Bus", "Reynard Mail Truck", "Uhl Coal Truck", "Thomas Grain Truck", "Craighead Goods Truck", "Foster Oil Tanker", "Foster Wood Truck", "Uhl Iron Ore Truck", "Uhl Steel Truck", "Uhl Armoured Truck", "Uhl Livestock Van"},
+        {"Foster Bus", "Perry Mail Truck", "DW Coal Truck", "Goss Grain Truck", "Goss Goods Truck", "Perry Oil Tanker", "Moreland Wood Truck", "Chippy Iron Ore Truck", "Kelling Steel Truck", "Foster Armoured Truck", "Foster Livestock Van"},
         {"Foster MkII Superbus"}
     }},
     {"Progressive Aircrafts", {
@@ -875,31 +875,37 @@ static bool AP_UnlockEngineByName(const std::string &name)
          * GUI filters by _ap_unlocked_engine_ids instead. */
         for (const std::string &veh : vehicles) {
             auto it = _ap_engine_map.find(veh);
-            if (it != _ap_engine_map.end()) {
-                _ap_unlocked_engine_ids.insert(it->second);
-                /* Defer the DoCommand — drains at 3/tick so a full aircraft tier
-                 * (14+ engines) never trips the server's commands_per_frame limit.
-                 * Local _ap_unlocked_engine_ids is updated immediately for the GUI.
-                 * Skip if the engine is already in _ap_company_engine_unlocked (e.g.
-                 * restored from savegame) — avoids flooding the network with 2500+
-                 * redundant commands on every replay/reconnect. */
-                if (!AP_IsCompanyEngineUnlocked(cid, it->second)) {
-                    { const uint16_t eb = it->second.base();
-                      _ap_deferred_cmds.push_back([cid, eb]() {
-                          Command<CMD_AP_SET_ENGINE_UNLOCK>::Post(cid, eb, true);
-                      }); }
-                }
-                /* Also unlock extras (e.g. "Oil Tanker" → Rail/Mono/Maglev variants) */
-                auto ext = _ap_engine_extras.find(veh);
-                if (ext != _ap_engine_extras.end()) {
-                    for (EngineID eid : ext->second) {
-                        _ap_unlocked_engine_ids.insert(eid);
-                        if (!AP_IsCompanyEngineUnlocked(cid, eid)) {
-                            const uint16_t xb = eid.base();
-                            _ap_deferred_cmds.push_back([cid, xb]() {
-                                Command<CMD_AP_SET_ENGINE_UNLOCK>::Post(cid, xb, true);
-                            });
-                        }
+            if (it == _ap_engine_map.end()) {
+                Debug(misc, 0, "[AP] UnlockEngine: '{}' NOT FOUND in engine map (tier {} of {})", veh, tier, name);
+                continue;
+            }
+            _ap_unlocked_engine_ids.insert(it->second);
+            /* Defer the DoCommand — drains at 3/tick so a full aircraft tier
+             * (14+ engines) never trips the server's commands_per_frame limit.
+             * Local _ap_unlocked_engine_ids is updated immediately for the GUI.
+             * Skip if the engine is already in _ap_company_engine_unlocked (e.g.
+             * restored from savegame) — avoids flooding the network with 2500+
+             * redundant commands on every replay/reconnect. */
+            if (!AP_IsCompanyEngineUnlocked(cid, it->second)) {
+                Debug(misc, 0, "[AP] UnlockEngine: queuing CMD for '{}' (eid {})", veh, it->second.base());
+                { const uint16_t eb = it->second.base();
+                  _ap_deferred_cmds.push_back([cid, eb]() {
+                      Command<CMD_AP_SET_ENGINE_UNLOCK>::Post(cid, eb, true);
+                  }); }
+            } else {
+                Debug(misc, 0, "[AP] UnlockEngine: '{}' already unlocked in savegame, skipping CMD", veh);
+            }
+            /* Also unlock extras (e.g. "Oil Tanker" → Rail/Mono/Maglev variants) */
+            auto ext = _ap_engine_extras.find(veh);
+            if (ext != _ap_engine_extras.end()) {
+                for (EngineID eid : ext->second) {
+                    _ap_unlocked_engine_ids.insert(eid);
+                    if (!AP_IsCompanyEngineUnlocked(cid, eid)) {
+                        Debug(misc, 0, "[AP] UnlockEngine: queuing CMD for extra eid {} (from '{}')", eid.base(), veh);
+                        const uint16_t xb = eid.base();
+                        _ap_deferred_cmds.push_back([cid, xb]() {
+                            Command<CMD_AP_SET_ENGINE_UNLOCK>::Post(cid, xb, true);
+                        });
                     }
                 }
             }
@@ -1012,15 +1018,13 @@ static bool        _ap_paused_for_client_join      = false; ///< True when we is
 /* _ap_world_started_this_session is reset per-connection so that a
  * reconnect to the same save can re-trigger AP world-start handshake. */
 static bool        _ap_world_started_this_session  = false;
-static bool        _ap_named_entity_refresh_needed = false; ///< Set after Load() — defer GetString calls to first game tick
 static bool        _ap_host_autoconnect_attempted  = false; ///< One-shot guard for MP host auto-connect in GM_NORMAL
 static std::string _ap_starting_grants_applied_slot;        ///< Slot name for which starters/cash were already applied in this save/session.
 
-/* Per-slot persisted grant state — survives save/load cycles via ap_grants.cfg */
-static std::map<std::string, int64_t> _ap_grants_items_index;   ///< Persisted items_received_index per slot identity
-static std::map<std::string, bool>    _ap_grants_starting_bonus; ///< Whether starting bonus was applied per slot identity
-static void AP_SaveGrantsFile();
-static void AP_LoadGrantsFile();  /* forward decl — defined near AP_LoadConnectionConfig */
+/* Persisted items_received_index — survives save/load cycles via the APST savegame chunk */
+static int64_t _ap_saved_items_index = 0; ///< Highest items_received_index seen for the current save's AP slot
+int64_t  AP_GetSavedItemsIndex()                  { return _ap_saved_items_index; }
+void     AP_SetSavedItemsIndex(int64_t v)         { _ap_saved_items_index = v; }
 void AP_RestoreItemsIndexBeforeConnect();  /* forward decl — exported, defined later */
 
 /* Items received before we've entered GM_NORMAL are queued here */
@@ -1046,6 +1050,7 @@ static void AP_ResetProgressStateForNewSlot()
 	_ap_received_item_counts.clear();
 	_ap_unlocked_tier_counts.clear();
 	_ap_starting_grants_applied_slot.clear();
+	_ap_saved_items_index = 0;
 	AP_InitSessionStats();
 }
 
@@ -1226,12 +1231,7 @@ static void AP_OnSlotData(const APSlotData &sd)
 		_ap_pending_items.clear();
 		_ap_replay_queue.clear();
 		_ap_client->ResetReceivedItemsIndex(); /* fresh game — treat all incoming items as new */
-		/* Clear persisted grants for this slot — it's a brand-new game */
-		if (!incoming_slot_identity.empty()) {
-			_ap_grants_items_index.erase(incoming_slot_identity);
-			_ap_grants_starting_bonus.erase(incoming_slot_identity);
-			AP_SaveGrantsFile();
-		}
+		_ap_saved_items_index = 0; /* fresh game — reset persisted index */
 		_ap_world_started_this_session = true;
 		_ap_pending_world_start        = true;
 		AP_OK(fmt::format("Slot data ready — scheduling world generation (year={}, map={}x{})",
@@ -1265,17 +1265,11 @@ static void AP_OnItemReceived(const APItem &item)
 	_ap_received_item_counts[item.item_name]++;
 	_ap_status_generation.fetch_add(1, std::memory_order_relaxed);
 
-	/* Persist items_received_index after each new item so future reconnects
+	/* Persist items_received_index in the savegame variable so future reconnects
 	 * correctly mark these items as is_replay=true. */
 	if (!is_replay && _ap_client != nullptr) {
-		const std::string slot_id = AP_GetCurrentConnectionSlotIdentity();
-		if (!slot_id.empty()) {
-			const int64_t idx = _ap_client->GetReceivedItemsIndex();
-			if (idx > 0) {
-				_ap_grants_items_index[slot_id] = idx;
-				AP_SaveGrantsFile();
-			}
-		}
+		const int64_t idx = _ap_client->GetReceivedItemsIndex();
+		if (idx > 0) _ap_saved_items_index = idx;
 	}
 
 	/* Progressive vehicle unlock — delegate entirely to EnableEngineForCompany */
@@ -1669,362 +1663,6 @@ void AP_SetCumulStatsByVtype(uint8_t cid, const uint64_t *flat_in, int vtype_cou
     s.from_save = true;
 }
 
-/* Returns "location=N:P,..." for all maintain missions.
- * N = consecutive months OK, P = 1 if first-month guard is pending, else 0. */
-std::string AP_GetMaintainCountersStr()
-{
-    std::string out;
-    for (const APMission &m : _ap_pending_sd.missions) {
-        if (m.type.find("maintain") == std::string::npos) continue;
-        if (m.maintain_months_ok == 0 && !m.maintain_first_month_pending) continue;
-        if (!out.empty()) out += ',';
-        out += m.location + '=' + fmt::format("{}:{}", m.maintain_months_ok,
-               m.maintain_first_month_pending ? 1 : 0);
-    }
-    return out;
-}
-
-void AP_SetMaintainCountersStr(const std::string &s)
-{
-    if (s.empty()) return;
-    /* Parse "loc=N:P,..." — P is optional for backwards compat with old saves */
-    std::string token;
-    auto apply = [&](const std::string &t) {
-        auto eq = t.find('=');
-        if (eq == std::string::npos) return;
-        std::string loc = t.substr(0, eq);
-        std::string val = t.substr(eq + 1);
-        int n = 0;
-        bool pending = false;
-        auto colon = val.find(':');
-        auto parse_int = [](const std::string &str) {
-            int v = 0;
-            for (char c : str) if (c >= '0' && c <= '9') v = v * 10 + (c - '0');
-            return v;
-        };
-        if (colon != std::string::npos) {
-            n       = parse_int(val.substr(0, colon));
-            pending = (parse_int(val.substr(colon + 1)) != 0);
-        } else {
-            n = parse_int(val);
-        }
-        for (APMission &m : _ap_pending_sd.missions) {
-            if (m.location == loc) {
-                m.maintain_months_ok           = n;
-                m.maintain_first_month_pending = pending;
-                break;
-            }
-        }
-    };
-    for (char c : s) {
-        if (c == ',') { apply(token); token.clear(); }
-        else token += c;
-    }
-    apply(token);
-}
-std::string AP_GetNamedEntityStr()
-{
-	std::string out;
-	for (const APMission &m : _ap_pending_sd.missions) {
-		if (m.named_entity.id < 0) continue;
-		if (!out.empty()) out += ';';
-		out += m.location + ':' +
-		       fmt::format("{}", m.named_entity.id) + ':' +
-		       fmt::format("{}", m.named_entity.cumulative);
-	}
-	return out;
-}
-
-/** Restore named entity assignments from save/load string.
- *  Format: "location:entity_id:cumulative;..." (semicolon-separated)
- *  Uses std::from_chars — no sscanf/strchr (both forbidden by safeguards.h). */
-/* Forward declarations for helpers defined later in this file */
-static std::string AP_TownName(const Town *t);
-static std::string AP_IndustryLabel(const Industry *ind);
-static void AP_StrReplace(std::string &s, const std::string &from, const std::string &to);
-
-void AP_SetNamedEntityStr(const std::string &s)
-{
-	if (s.empty()) return;
-
-	std::string_view sv(s);
-	while (!sv.empty()) {
-		/* Find the ';' that ends this entry (or end-of-string) */
-		auto semi = sv.find(';');
-		std::string_view entry = sv.substr(0, semi);
-		if (semi == std::string_view::npos) sv = {}; else sv = sv.substr(semi + 1);
-
-		/* Split entry into "loc : eid : cum" */
-		auto c1 = entry.find(':');
-		if (c1 == std::string_view::npos) continue;
-		auto c2 = entry.find(':', c1 + 1);
-		if (c2 == std::string_view::npos) continue;
-
-		std::string_view loc_sv  = entry.substr(0, c1);
-		std::string_view eid_sv  = entry.substr(c1 + 1, c2 - c1 - 1);
-		std::string_view cum_sv  = entry.substr(c2 + 1);
-
-		int32_t  eid = -1;
-		uint64_t cum = 0;
-		std::from_chars(eid_sv.data(), eid_sv.data() + eid_sv.size(), eid);
-		std::from_chars(cum_sv.data(), cum_sv.data() + cum_sv.size(), cum);
-
-		std::string loc_str(loc_sv);
-		for (APMission &m : _ap_pending_sd.missions) {
-			if (m.location != loc_str) continue;
-			m.named_entity.id         = eid;
-			m.named_entity.cumulative = cum;
-
-			/* Name/tile/cargo resolution requires live map pointers (ind->town etc.)
-			 * which are NOT valid during chunk Load — AfterLoadGame() resolves them later.
-			 * We set a flag here and defer the GetString calls to the first game tick. */
-			_ap_named_entity_refresh_needed = true;
-			break;
-		}
-	}
-}
-/* -------------------------------------------------------------------------
- * Named-destination missions: assign map entities and accumulate progress.
- * Placed after all AP state variables so _ap_pending_sd is accessible.
- * ---------------------------------------------------------------------- */
-
-/** Get town name using OTTDv15 variadic GetString API. */
-static std::string AP_TownName(const Town *t)
-{
-	if (t == nullptr) return "Unknown";
-	return GetString(STR_TOWN_NAME, t->index);
-}
-
-/** Get "IndustryType near TownName" label. */
-static std::string AP_IndustryLabel(const Industry *ind)
-{
-	if (ind == nullptr) return "Unknown Industry";
-	std::string ind_name  = GetString(STR_INDUSTRY_NAME, ind->index);
-	std::string town_name = GetString(STR_TOWN_NAME,     ind->town->index);
-	return ind_name + " near " + town_name;
-}
-
-/**
- * Re-resolve name/tile/cargo for all named-entity missions that have a valid
- * eid but an empty name.  Called on first game tick after a savegame load,
- * when AfterLoadGame() has fully resolved all pool pointers (ind->town etc.).
- */
-static void AP_RefreshNamedEntityNames()
-{
-	for (APMission &m : _ap_pending_sd.missions) {
-		int32_t eid = m.named_entity.id;
-		if (eid < 0) continue; /* not yet assigned */
-		if (!m.named_entity.name.empty()) continue; /* already resolved */
-
-		if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
-			const Town *t = Town::GetIfValid((TownID)eid);
-			if (t != nullptr) {
-				m.named_entity.name       = AP_TownName(t);
-				m.named_entity.tile       = t->xy.base();
-				m.named_entity.tae        = (m.type == "passengers_to_town") ? TAE_PASSENGERS : TAE_MAIL;
-				m.named_entity.cargo_type = (uint8_t)((m.type == "passengers_to_town")
-				    ? AP_FindCargoType("passengers")
-				    : AP_FindCargoType("mail"));
-				AP_StrReplace(m.description, "[Town]", m.named_entity.name);
-			}
-		} else if (m.type == "cargo_from_industry") {
-			const Industry *ind = Industry::GetIfValid((IndustryID)eid);
-			if (ind != nullptr && ind->town != nullptr) {
-				m.named_entity.name       = AP_IndustryLabel(ind);
-				m.named_entity.tile       = ind->location.tile.base();
-				uint8_t first_ct = 0xFF;
-				for (const auto &slot : ind->produced) {
-					if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; }
-				}
-				m.named_entity.cargo_type = first_ct;
-				AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
-			}
-		} else if (m.type == "cargo_to_industry") {
-			const Industry *ind = Industry::GetIfValid((IndustryID)eid);
-			if (ind != nullptr && ind->town != nullptr) {
-				m.named_entity.name       = AP_IndustryLabel(ind);
-				m.named_entity.tile       = ind->location.tile.base();
-				uint8_t first_ct = 0xFF;
-				for (const auto &slot : ind->accepted) {
-					if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; }
-				}
-				m.named_entity.cargo_type = first_ct;
-				AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
-			}
-		}
-	}
-	_ap_named_entity_refresh_needed = false;
-}
-
-/** Replace first occurrence of 'from' in 's' with 'to'. */
-static void AP_StrReplace(std::string &s, const std::string &from, const std::string &to)
-{
-	size_t pos = s.find(from);
-	if (pos != std::string::npos) s.replace(pos, from.size(), to);
-}
-
-/**
- * At session start: assign real map towns/industries to named-destination
- * missions (type "passengers_to_town", "mail_to_town", "cargo_to_industry",
- * "cargo_from_industry").  Assignments are seed-deterministic.
- */
-static void AP_AssignNamedEntities()
-{
-	/* Collect candidates */
-	std::vector<const Town     *> towns;
-	std::vector<const Industry *> prod_inds;
-	std::vector<const Industry *> acc_inds;
-	for (const Town     *t   : Town::Iterate())     towns.push_back(t);
-	for (const Industry *ind : Industry::Iterate()) {
-		if (!ind->produced.empty()) prod_inds.push_back(ind);
-		if (!ind->accepted.empty()) acc_inds.push_back(ind);
-	}
-	if (towns.empty()) return;
-
-	/* XOR-shift RNG seeded from world seed */
-	/* Use the actual map generation seed for deterministic town/industry
-	 * assignment.  _ap_pending_sd.world_seed is 0 (Python sends 0 and lets
-	 * OpenTTD pick its own seed), so we fall back to the real game seed. */
-	const uint32_t map_seed = (_ap_pending_sd.world_seed != 0)
-		? _ap_pending_sd.world_seed
-		: _settings_game.game_creation.generation_seed;
-	uint32_t rng = map_seed ^ 0xDEADBEEFu;
-	auto next_rng = [&]() -> uint32_t {
-		rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng;
-	};
-	auto shuffle = [&](auto &v) {
-		for (size_t i = v.size(); i > 1; --i) std::swap(v[i-1], v[next_rng() % i]);
-	};
-	shuffle(towns); shuffle(prod_inds); shuffle(acc_inds);
-
-	std::set<int32_t> used_towns, used_inds;
-	size_t ti = 0, pi = 0, ai = 0;
-
-	for (APMission &m : _ap_pending_sd.missions) {
-		if (m.named_entity.id >= 0 && !m.named_entity.name.empty()) continue; /* already fully resolved */
-
-		if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
-			while (ti < towns.size() && used_towns.count((int32_t)towns[ti]->index.base())) ti++;
-			if (ti >= towns.size()) ti = 0;
-			const Town *t           = towns[ti++];
-			m.named_entity.id       = (int32_t)t->index.base();
-			m.named_entity.name     = AP_TownName(t);
-			m.named_entity.tile     = t->xy.base();
-			m.named_entity.tae      = (m.type == "passengers_to_town") ? TAE_PASSENGERS : TAE_MAIL;
-			m.named_entity.cargo_type = (uint8_t)((m.type == "passengers_to_town")
-			    ? AP_FindCargoType("passengers")
-			    : AP_FindCargoType("mail"));
-			used_towns.insert(m.named_entity.id);
-			AP_StrReplace(m.description, "[Town]", m.named_entity.name);
-
-		} else if (m.type == "cargo_from_industry") {
-			while (pi < prod_inds.size() && used_inds.count((int32_t)prod_inds[pi]->index.base())) pi++;
-			if (pi >= prod_inds.size()) pi = 0;
-			const Industry *ind        = prod_inds[pi++];
-			m.named_entity.id          = (int32_t)ind->index.base();
-			m.named_entity.name        = AP_IndustryLabel(ind);
-			m.named_entity.tile        = ind->location.tile.base();
-			m.named_entity.cargo_slot  = 0;
-			/* First VALID produced slot — slot[0] may be INVALID_CARGO */
-			{ uint8_t first_ct = 0xFF;
-			  for (const auto &slot : ind->produced) { if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; } }
-			  m.named_entity.cargo_type = first_ct; }
-			used_inds.insert(m.named_entity.id);
-			AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
-
-		} else if (m.type == "cargo_to_industry") {
-			while (ai < acc_inds.size() && used_inds.count((int32_t)acc_inds[ai]->index.base())) ai++;
-			if (ai >= acc_inds.size()) ai = 0;
-			const Industry *ind        = acc_inds[ai++];
-			m.named_entity.id          = (int32_t)ind->index.base();
-			m.named_entity.name        = AP_IndustryLabel(ind);
-			m.named_entity.tile        = ind->location.tile.base();
-			m.named_entity.cargo_slot  = 0;
-			/* First VALID accepted slot — slot[0] may be INVALID_CARGO */
-			{ uint8_t first_ct = 0xFF;
-			  for (const auto &slot : ind->accepted) { if (IsValidCargoType(slot.cargo)) { first_ct = (uint8_t)slot.cargo; break; } }
-			  m.named_entity.cargo_type = first_ct; }
-			used_inds.insert(m.named_entity.id);
-			AP_StrReplace(m.description, "[Industry near Town]", m.named_entity.name);
-		}
-	}
-}
-
-/**
- * Called monthly: accumulate named-entity progress and protect industries
- * from random closure while their mission is active.
- */
-static void AP_UpdateNamedMissions()
-{
-	CompanyID cid = _local_company;
-	if (cid >= MAX_COMPANIES) return;
-
-	for (APMission &m : _ap_pending_sd.missions) {
-		if (m.completed)           continue;
-		if (m.named_entity.id < 0) continue;
-		if (m.named_entity.cargo_type == 0xFF) continue;
-
-		CargoType ct = (CargoType)m.named_entity.cargo_type;
-
-		if (m.type == "passengers_to_town" || m.type == "mail_to_town") {
-			/* Use cargomonitor: company-specific deliveries to this town only */
-			TownID tid = (TownID)m.named_entity.id;
-			if (!Town::IsValidID(tid)) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
-			CargoMonitorID monitor = EncodeCargoTownMonitor(cid, ct, tid);
-			int32_t delivered = GetDeliveryAmount(monitor, true); /* true = keep monitoring */
-			if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
-
-		} else if (m.type == "cargo_from_industry") {
-			/* Use cargomonitor: company-specific pickups from this industry.
-			 * Sum ALL produced cargo slots — some industries produce multiple
-			 * cargo types (e.g. Oil Refinery produces both Goods and Oil). */
-			IndustryID iid = (IndustryID)m.named_entity.id;
-			Industry *ind = Industry::GetIfValid(iid);
-			if (ind == nullptr) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
-			if (ind->prod_level < PRODLEVEL_DEFAULT) ind->prod_level = PRODLEVEL_DEFAULT;
-			for (const auto &slot : ind->produced) {
-				if (!IsValidCargoType(slot.cargo)) continue;
-				CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
-				int32_t picked_up = GetPickupAmount(monitor, true);
-				if (picked_up > 0) m.named_entity.cumulative += (uint64_t)picked_up;
-			}
-
-		} else if (m.type == "cargo_to_industry") {
-			/* Use cargomonitor: company-specific deliveries to this industry.
-			 * Sum ALL accepted cargo slots — industries like Cadton Factory
-			 * accept Livestock + Grain + Steel; only counting slot 0 (Livestock)
-			 * meant Steel and Grain deliveries never registered. */
-			IndustryID iid = (IndustryID)m.named_entity.id;
-			Industry *ind = Industry::GetIfValid(iid);
-			if (ind == nullptr) { m.named_entity.cumulative = (uint64_t)m.amount; continue; }
-			if (ind->prod_level < PRODLEVEL_DEFAULT) ind->prod_level = PRODLEVEL_DEFAULT;
-			for (const auto &slot : ind->accepted) {
-				if (!IsValidCargoType(slot.cargo)) continue;
-				CargoMonitorID monitor = EncodeCargoIndustryMonitor(cid, slot.cargo, iid);
-				int32_t delivered = GetDeliveryAmount(monitor, true);
-				if (delivered > 0) m.named_entity.cumulative += (uint64_t)delivered;
-			}
-		}
-	}
-}
-
-
-/* -------------------------------------------------------------------------
- * Monthly timer: advance "maintain rating" mission counters.
- * For each incomplete maintain-mission, check if ALL rated stations owned by
- * the player currently meet the threshold. If yes, increment the counter;
- * if any station falls below, reset it to zero.
- * ---------------------------------------------------------------------- */
-static const IntervalTimer<TimerGameCalendar> _ap_calendar_maintain_check(
-	{ TimerGameCalendar::MONTH, TimerGameCalendar::Priority::NONE },
-	[](auto) {
-		if (!_ap_session_started) return;
-	}
-);
-
-/* Legacy item rotation removed.
- * No periodic item-list refresh timer is needed anymore. */
-
 /* -------------------------------------------------------------------------
  * Mission evaluation — calls EvaluateMission() for all incomplete missions
  * and fires AP_SendCheckByName when a mission is satisfied.
@@ -2122,9 +1760,7 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		    _ap_client->GetState() == APState::AUTHENTICATED &&
 		    (!AP_IsCompanyAPActive(_local_company) || !_ap_session_started)) {  /* Setup on fresh connect OR after slot data (e.g. save-load reconnect) */
 
-			const std::string cur_slot_id = AP_GetCurrentConnectionSlotIdentity();
 			const bool apply_starting_grants =
-				!(_ap_grants_starting_bonus.count(cur_slot_id) && _ap_grants_starting_bonus.at(cur_slot_id)) &&
 				_ap_starting_grants_applied_slot != _ap_last_slot && !_ap_session_started;
 			_ap_session_started = true;  /* Mark global session as started (for mission checks on first company only) */
 			_ap_received_item_counts.clear();  /* reset for fresh item tracking this session */
@@ -2281,10 +1917,6 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 
 			if (apply_starting_grants) {
 				_ap_starting_grants_applied_slot = _ap_last_slot;
-				if (!cur_slot_id.empty()) {
-					_ap_grants_starting_bonus[cur_slot_id] = true;
-					AP_SaveGrantsFile();
-				}
 			}
 
 			/* Drip-feed pending items into the replay queue — processed one per
@@ -2401,58 +2033,6 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
  * re-firing when a saved game is loaded after a game process restart.
  * -------------------------------------------------------------------------- */
 
-static void AP_SaveGrantsFile()
-{
-	std::string path = _personal_dir + "ap_grants.cfg";
-	FILE *f = fopen(path.c_str(), "w");
-	if (f == nullptr) return;
-	std::set<std::string> sections;
-	for (const auto &[k, v] : _ap_grants_items_index)   sections.insert(k);
-	for (const auto &[k, v] : _ap_grants_starting_bonus) sections.insert(k);
-	for (const auto &sec : sections) {
-		fmt::print(f, "[{}]\n", sec);
-		auto idx_it = _ap_grants_items_index.find(sec);
-		if (idx_it != _ap_grants_items_index.end() && idx_it->second > 0)
-			fmt::print(f, "items_index={}\n", idx_it->second);
-		auto bonus_it = _ap_grants_starting_bonus.find(sec);
-		if (bonus_it != _ap_grants_starting_bonus.end())
-			fmt::print(f, "starting_bonus={}\n", bonus_it->second ? 1 : 0);
-	}
-	fclose(f);
-}
-
-static void AP_LoadGrantsFile()
-{
-	std::string path = _personal_dir + "ap_grants.cfg";
-	FILE *f = fopen(path.c_str(), "r");
-	if (f == nullptr) return;
-	char line[512];
-	std::string current_section;
-	while (fgets(line, sizeof(line), f)) {
-		size_t len = strlen(line);
-		while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
-		std::string s(line);
-		if (s.empty()) continue;
-		if (s.front() == '[' && s.back() == ']') {
-			current_section = s.substr(1, s.size() - 2);
-			continue;
-		}
-		if (current_section.empty()) continue;
-		auto eq = s.find('=');
-		if (eq == std::string::npos) continue;
-		std::string key = s.substr(0, eq);
-		std::string val = s.substr(eq + 1);
-		if (key == "items_index") {
-			int64_t v = 0;
-			auto [ptr, ec] = std::from_chars(val.data(), val.data() + val.size(), v);
-			if (ec == std::errc{} && v > 0) _ap_grants_items_index[current_section] = v;
-		} else if (key == "starting_bonus") {
-			_ap_grants_starting_bonus[current_section] = (val == "1");
-		}
-	}
-	fclose(f);
-}
-
 /** Must be called immediately before _ap_client->Connect().
  * Sets items_received_index to the persisted value for this slot so that the
  * AP worker thread correctly marks replayed items as is_replay=true when
@@ -2462,15 +2042,9 @@ static void AP_LoadGrantsFile()
 void AP_RestoreItemsIndexBeforeConnect()
 {
 	if (_ap_client == nullptr) return;
-	/* Ensure grants are loaded — no-op if already loaded since maps are not cleared */
-	if (_ap_grants_items_index.empty() && _ap_grants_starting_bonus.empty()) AP_LoadGrantsFile();
-	const std::string slot_id = AP_GetCurrentConnectionSlotIdentity();
-	if (slot_id.empty()) return;
-	auto idx_it = _ap_grants_items_index.find(slot_id);
-	if (idx_it != _ap_grants_items_index.end() && idx_it->second > 0) {
-		AP_OK(fmt::format("[AP] Restoring items_received_index={} for slot '{}' before connect.",
-		      idx_it->second, slot_id));
-		_ap_client->SetReceivedItemsIndex(idx_it->second);
+	if (_ap_saved_items_index > 0) {
+		AP_OK(fmt::format("[AP] Restoring items_received_index={} before connect.", _ap_saved_items_index));
+		_ap_client->SetReceivedItemsIndex(_ap_saved_items_index);
 	}
 }
 
@@ -2495,7 +2069,10 @@ void AP_SaveConnectionConfig()
 
 void AP_LoadConnectionConfig()
 {
-	AP_LoadGrantsFile();
+	/* One-time migration: delete the legacy ap_grants.cfg — its data is now
+	 * stored in the savegame APST chunk.  Silent no-op if already gone. */
+	std::remove((_personal_dir + "ap_grants.cfg").c_str());
+
 	std::string path = _personal_dir + "ap_connection.cfg";
 	FILE *f = fopen(path.c_str(), "r");
 	if (f == nullptr) return;

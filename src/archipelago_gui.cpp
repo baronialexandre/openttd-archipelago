@@ -729,9 +729,7 @@ struct ArchipelagoMissionsWindow : public Window {
 		if (!general.empty()) {
 			rows.push_back({ MissionRow::SECTION_HEADER, "— Missions —", nullptr, "" });
 			for (const APMission *m : general) {
-				std::string lbl = m->description;
-				if (m->named_entity.tile != UINT32_MAX) lbl += " \xe2\x86\x91";
-				rows.push_back({ MissionRow::MISSION, "", m, std::move(lbl) });
+				rows.push_back({ MissionRow::MISSION, "", m, m->description });
 			}
 		}
 
@@ -851,10 +849,7 @@ struct ArchipelagoMissionsWindow : public Window {
 		int idx = this->scrollbar->GetPosition() + (pt.y - rect.top - 2) / rh;
 		if (idx < 0 || idx >= (int)rows.size()) return;
 		const auto &mr = rows[idx];
-		if (mr.type == MissionRow::MISSION && mr.mission &&
-		    mr.mission->named_entity.tile != UINT32_MAX) {
-			ScrollMainWindowToTile(TileIndex{mr.mission->named_entity.tile});
-		}
+		(void)mr; /* click on mission row — no action */
 	}
 
 	void DrawWidget(const Rect &r, WidgetID widget) const override
