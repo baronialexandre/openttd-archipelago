@@ -8,6 +8,7 @@
 /** @file archipelago_cmd.cpp Command handlers for Archipelago synchronized state. */
 
 #include "stdafx.h"
+#include <charconv>
 #include "archipelago_cmd.h"
 #include "company_base.h"
 #include "cargotype.h"
@@ -316,4 +317,34 @@ CommandCost CmdAPSetUtilityUnlock(DoCommandFlags flags, CompanyID company, uint8
 	}
 
 	return CommandCost();
+}
+
+/* ---- Engine unlock serialization helpers (used by archipelago_sl.cpp) ---- */
+
+std::string AP_GetCompanyEngineUnlockStr(uint8_t idx)
+{
+	if (idx >= MAX_COMPANIES) return {};
+	std::string result;
+	result.reserve(_ap_company_engine_unlocked[idx].size() * 5);
+	for (uint16_t id : _ap_company_engine_unlocked[idx]) {
+		if (!result.empty()) result += ',';
+		char buf[8];
+		auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), id);
+		result.append(buf, ptr);
+	}
+	return result;
+}
+
+void AP_SetCompanyEngineUnlockStr(uint8_t idx, const std::string &s)
+{
+	if (idx >= MAX_COMPANIES || s.empty()) return;
+	const char *p = s.data();
+	const char *end = p + s.size();
+	while (p < end) {
+		uint16_t id = 0;
+		auto [next, ec] = std::from_chars(p, end, id);
+		if (ec == std::errc{}) _ap_company_engine_unlocked[idx].insert(id);
+		p = next;
+		if (p < end && *p == ',') ++p;
+	}
 }

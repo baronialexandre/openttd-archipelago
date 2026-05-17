@@ -31,10 +31,12 @@ void AP_ResetCompanyUtilityUnlocks(CompanyID company);
  * These write directly to the per-company arrays WITHOUT going through a
  * DoCommand, so they are only safe to call from savegame Load().
  */
-bool     AP_GetCompanyAPActiveIdx(uint8_t company_index);
-uint64_t AP_GetCompanyCargoMaskIdx(uint8_t company_index);
-void     AP_SetCompanyAPActiveIdx(uint8_t company_index, bool active);
-void     AP_SetCompanyCargoMaskIdx(uint8_t company_index, uint64_t mask);
+bool        AP_GetCompanyAPActiveIdx(uint8_t company_index);
+uint64_t    AP_GetCompanyCargoMaskIdx(uint8_t company_index);
+void        AP_SetCompanyAPActiveIdx(uint8_t company_index, bool active);
+void        AP_SetCompanyCargoMaskIdx(uint8_t company_index, uint64_t mask);
+std::string AP_GetCompanyEngineUnlockStr(uint8_t company_index);
+void        AP_SetCompanyEngineUnlockStr(uint8_t company_index, const std::string &s);
 
 DEF_CMD_TRAIT(CMD_AP_SET_CARGO_UNLOCK, CmdAPSetCargoUnlock, {}, CommandType::ServerSetting)
 DEF_CMD_TRAIT(CMD_AP_MONEY, CmdAPMoney, CommandFlag::NoEst, CommandType::ServerSetting)

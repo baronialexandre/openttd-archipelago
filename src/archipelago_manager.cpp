@@ -879,20 +879,27 @@ static bool AP_UnlockEngineByName(const std::string &name)
                 _ap_unlocked_engine_ids.insert(it->second);
                 /* Defer the DoCommand — drains at 3/tick so a full aircraft tier
                  * (14+ engines) never trips the server's commands_per_frame limit.
-                 * Local _ap_unlocked_engine_ids is updated immediately for the GUI. */
-                { const uint16_t eb = it->second.base();
-                  _ap_deferred_cmds.push_back([cid, eb]() {
-                      Command<CMD_AP_SET_ENGINE_UNLOCK>::Post(cid, eb, true);
-                  }); }
+                 * Local _ap_unlocked_engine_ids is updated immediately for the GUI.
+                 * Skip if the engine is already in _ap_company_engine_unlocked (e.g.
+                 * restored from savegame) — avoids flooding the network with 2500+
+                 * redundant commands on every replay/reconnect. */
+                if (!AP_IsCompanyEngineUnlocked(cid, it->second)) {
+                    { const uint16_t eb = it->second.base();
+                      _ap_deferred_cmds.push_back([cid, eb]() {
+                          Command<CMD_AP_SET_ENGINE_UNLOCK>::Post(cid, eb, true);
+                      }); }
+                }
                 /* Also unlock extras (e.g. "Oil Tanker" → Rail/Mono/Maglev variants) */
                 auto ext = _ap_engine_extras.find(veh);
                 if (ext != _ap_engine_extras.end()) {
                     for (EngineID eid : ext->second) {
                         _ap_unlocked_engine_ids.insert(eid);
-                        const uint16_t xb = eid.base();
-                        _ap_deferred_cmds.push_back([cid, xb]() {
-                            Command<CMD_AP_SET_ENGINE_UNLOCK>::Post(cid, xb, true);
-                        });
+                        if (!AP_IsCompanyEngineUnlocked(cid, eid)) {
+                            const uint16_t xb = eid.base();
+                            _ap_deferred_cmds.push_back([cid, xb]() {
+                                Command<CMD_AP_SET_ENGINE_UNLOCK>::Post(cid, xb, true);
+                            });
+                        }
                     }
                 }
             }
@@ -2335,9 +2342,8 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 		}
 
 		/* Pause once when a client joins who hasn't yet connected to AP.
-		 * The host must unpause manually once the joining client has connected.
-		 * The flag resets silently once all active clients have AP active,
-		 * so the next client join will trigger a fresh pause. */
+		 * Auto-unpauses once all active clients have AP active.
+		 * The flag resets once all clients have AP so the next join triggers a fresh pause. */
 		if (_networking && _network_server && _ap_session_started && _game_mode == GM_NORMAL) {
 			bool any_without_ap = false;
 			for (const NetworkClientSocket *cs : NetworkClientSocket::Iterate()) {
@@ -2351,9 +2357,11 @@ static IntervalTimer<TimerGameRealtime> _ap_realtime_timer(
 			if (any_without_ap && !_ap_paused_for_client_join) {
 				_ap_paused_for_client_join = true;
 				Command<CMD_PAUSE>::Post(PauseMode::Normal, true);
-				AP_OK("Game paused: waiting for joining client to connect to Archipelago. Unpause manually when ready.");
-			} else if (!any_without_ap) {
-				_ap_paused_for_client_join = false; /* reset so next join triggers a new pause */
+				AP_OK("Game paused: waiting for joining client to connect to Archipelago.");
+			} else if (!any_without_ap && _ap_paused_for_client_join) {
+				_ap_paused_for_client_join = false;
+				Command<CMD_PAUSE>::Post(PauseMode::Normal, false);
+				AP_OK("All clients connected to Archipelago — game resumed.");
 			}
 		}
 

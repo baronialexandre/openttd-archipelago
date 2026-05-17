@@ -130,10 +130,12 @@ std::string  AP_GetNamedEntityStr();
 void         AP_SetNamedEntityStr(const std::string &s);
 
 /* Per-company AP lock state (simulation-critical — must be in savegame). */
-bool     AP_GetCompanyAPActiveIdx(uint8_t company_index);
-uint64_t AP_GetCompanyCargoMaskIdx(uint8_t company_index);
-void     AP_SetCompanyAPActiveIdx(uint8_t company_index, bool active);
-void     AP_SetCompanyCargoMaskIdx(uint8_t company_index, uint64_t mask);
+bool        AP_GetCompanyAPActiveIdx(uint8_t company_index);
+uint64_t    AP_GetCompanyCargoMaskIdx(uint8_t company_index);
+void        AP_SetCompanyAPActiveIdx(uint8_t company_index, bool active);
+void        AP_SetCompanyCargoMaskIdx(uint8_t company_index, uint64_t mask);
+std::string AP_GetCompanyEngineUnlockStr(uint8_t company_index);
+void        AP_SetCompanyEngineUnlockStr(uint8_t company_index, const std::string &s);
 
 static constexpr uint8_t AP_SL_MAX_COMPANIES = 15; /* matches MAX_COMPANIES */
 
@@ -170,7 +172,8 @@ struct APSTChunkHandler : ChunkHandler {
         KVSet(_ap_sl_blob, "named",    AP_GetNamedEntityStr());
 
         /* Save per-company AP state (cargo lock + per-vtype delivery counters).
-         * cargov_N = flat [vtype][cargo] array; contains the ground truth totals. */
+         * cargov_N = flat [vtype][cargo] array; contains the ground truth totals.
+         * ape_N   = comma-separated engine IDs that are individually unlocked. */
         constexpr int NC = 64;
         constexpr int NV = 4;
         for (uint8_t c = 0; c < AP_SL_MAX_COMPANIES; c++) {
@@ -178,6 +181,9 @@ struct APSTChunkHandler : ChunkHandler {
             KVSet(_ap_sl_blob, fmt::format("apf_{}", c), "1");
             uint64_t cmask = AP_GetCompanyCargoMaskIdx(c);
             if (cmask != 0) KVSet(_ap_sl_blob, fmt::format("apc_{}", c), fmt::format("{}", cmask));
+
+            std::string estr = AP_GetCompanyEngineUnlockStr(c);
+            if (!estr.empty()) KVSet(_ap_sl_blob, fmt::format("ape_{}", c), estr);
 
             uint64_t cargov[NV * NC] = {};
             AP_GetCumulStatsByVtype(c, cargov, NV, NC);
@@ -260,7 +266,7 @@ struct APSTChunkHandler : ChunkHandler {
             AP_SetNamedEntityStr(KVGet(_ap_sl_blob, "named"));
 
             /* Restore per-company AP state (cargo lock + delivery counters).
-             * Current format: cargov_N per AP-active company.
+             * Current format: cargov_N per AP-active company; ape_N for engine unlocks.
              * Legacy fallback A: cargo_N + cargov_N keys (pre-direct-counter saves) —
              *   we load cargov_N if present, ignoring cargo_N (it was timer-based).
              * Legacy fallback B: single "cargov" key (single-company pre-multiAP) —
@@ -273,6 +279,9 @@ struct APSTChunkHandler : ChunkHandler {
                 AP_SetCompanyAPActiveIdx(c, true);
                 uint64_t cmask = ParseU64(KVGet(_ap_sl_blob, fmt::format("apc_{}", c), "0"), 0);
                 if (cmask != 0) AP_SetCompanyCargoMaskIdx(c, cmask);
+
+                std::string estr = KVGet(_ap_sl_blob, fmt::format("ape_{}", c));
+                if (!estr.empty()) AP_SetCompanyEngineUnlockStr(c, estr);
 
                 std::string cargov_str = KVGet(_ap_sl_blob, fmt::format("cargov_{}", c));
                 if (!cargov_str.empty()) {
